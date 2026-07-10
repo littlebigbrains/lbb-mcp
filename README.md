@@ -1,7 +1,7 @@
 # @littlebigbrain/mcp
 
 An [MCP](https://modelcontextprotocol.io) server that gives an agent a small,
-graph-aware tool belt over a [Little Big Brain](https://littlebigbrain.com) server. It wraps the
+graph-aware tool belt over a [little big brain](https://littlebigbrain.com) server. It wraps the
 [`@littlebigbrain/client`](https://www.npmjs.com/package/@littlebigbrain/client) TypeScript SDK and ships two ways: a local
 stdio shim (`npx @littlebigbrain/mcp`) and a hosted streamable-HTTP endpoint.
 
@@ -30,8 +30,8 @@ single-mode token.
 
 ## Hosted (streamable-HTTP, WorkOS OAuth)
 
-The hosted endpoint at `https://mcp.littlebigbrain.com` is served by Little Big
-Brain's hosted SaaS API and authenticated with **native WorkOS MCP OAuth** — there is
+The hosted endpoint at `https://mcp.littlebigbrain.com` is served by little big
+brain's hosted SaaS API and authenticated with **native WorkOS MCP OAuth** — there is
 no static bearer key. It is an OAuth 2.1 protected resource: WorkOS AuthKit is
 the authorization server. Claude-style clients can use the per-stack URL:
 
@@ -52,7 +52,7 @@ a `WWW-Authenticate` challenge pointing at
 sign-in (DCR/PKCE), and presents the resulting access token. The endpoint
 validates the WorkOS JWT, confirms your account owns the stack, mints a
 short-lived data-plane session, and runs the tools scoped to that stack — your
-machine never holds a Little Big Brain key. Add `?graph=`/`?branch=` to the URL to target a
+machine never holds a little big brain key. Add `?graph=`/`?branch=` to the URL to target a
 graph/branch other than `main`.
 
 Codex Desktop currently sends the MCP server URL as an OAuth `resource`
@@ -125,7 +125,7 @@ edge is intentionally not part of this library API.
 
 `lbb_configure` with `action: "define_ontology"` creates a **new** graph with a custom ontology, since the
 ontology is fixed at graph creation. Give it entity-type and relation names (the
-agent-friendly "spec" shape) and Little Big Brain fills in ids and sensible defaults:
+agent-friendly "spec" shape) and little big brain fills in ids and sensible defaults:
 
 ```jsonc
 // lbb_configure
@@ -289,7 +289,7 @@ SPARQL text (`mode: "sparql"`) addresses relations/types/properties as
 `<https://littlebigbrain.com/{r,class,p}/name>`, and the local name is **always
 lowercase** — an uppercase one (e.g. `<…/r/FOR_CLIENT>`) is a different,
 non-existent IRI that silently matches nothing. The tool auto-lowercases those
-Little Big Brain IRI local names for you (percent-escapes preserved; foreign IRIs and string
+little big brain IRI local names for you (percent-escapes preserved; foreign IRIs and string
 literals untouched) and reports each rewrite under `notes`, so a stray uppercase
 resolves instead of returning an empty result with no error.
 

@@ -196,18 +196,18 @@ export function stableJson(value: unknown): string {
   return JSON.stringify(stable(value));
 }
 
-// Little Big Brain's RDF projection mints relation/class/property predicate IRIs from the
+// little big brain's RDF projection mints relation/class/property predicate IRIs from the
 // *normalized* (lowercased) name, so the canonical local part is always
 // lowercase. A SPARQL term like <https://littlebigbrain.com/r/FOR_CLIENT> is therefore a
 // different — and non-existent — IRI than the real <…/r/for_client>, and it
 // matches nothing while returning **no error** (the silent-0 trap: structured
 // mode is case-insensitive, SPARQL text is not). These helpers canonicalize the
-// local-name case for the three Little Big Brain namespaces so an MCP SPARQL query just works.
+// local-name case for the three little big brain namespaces so an MCP SPARQL query just works.
 export const LBB_IRI_RE =
   /<https:\/\/littlebigbrain\.com\/(r|class|p)\/([^>]*)>/g;
 
 /**
- * Lowercase the ASCII letters of a Little Big Brain IRI local part while leaving `%XX`
+ * Lowercase the ASCII letters of a little big brain IRI local part while leaving `%XX`
  * percent-escapes byte-for-byte (the projection's `encode_segment` emits *upper*
  * hex, e.g. `a%2Fb`, so lowercasing the escape would break the match). Real
  * relation names are identifiers like `FOR_CLIENT` with no escapes, so this is a
@@ -228,9 +228,9 @@ export function lowercaseLocalName(local: string): string {
 }
 
 /**
- * Canonicalize the case of Little Big Brain relation/class/property IRI local names in a
+ * Canonicalize the case of little big brain relation/class/property IRI local names in a
  * SPARQL text query, and report each distinct rewrite so the change is never
- * hidden. Only touches angle-bracket IRIs under the three Little Big Brain namespaces, so
+ * hidden. Only touches angle-bracket IRIs under the three little big brain namespaces, so
  * string literals and foreign IRIs (rdfs:label, foaf, …) are untouched. Because
  * the canonical form is already lowercase, an already-lowercase query is an
  * exact no-op (no rewrite, no note).
@@ -1337,7 +1337,7 @@ export async function schemaPreview(
 }
 
 /**
- * Register the hard-break v2 Little Big Brain tool belt on an MCP server. The surface is
+ * Register the hard-break v2 little big brain tool belt on an MCP server. The surface is
  * task-oriented for agents; each tool dispatches to the existing @littlebigbrain/client
  * routes without adding new HTTP or SDK APIs.
  */

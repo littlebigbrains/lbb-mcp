@@ -671,7 +671,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               );
             }
 
-            // Canonicalize Little Big Brain relation/class/property IRI local-name case up
+            // Canonicalize little big brain relation/class/property IRI local-name case up
             // front, then use the normalized text everywhere (mismatch check,
             // request, cursor) so a continuation page that re-passes the raw
             // query still matches the already-normalized cursor query. A cursor's

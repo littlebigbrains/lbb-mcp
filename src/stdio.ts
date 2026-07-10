@@ -5,7 +5,7 @@ import { buildLbbServer } from "./server.js";
 
 /**
  * Local stdio entrypoint (`npx @littlebigbrain/mcp`). Reads the connection from the
- * environment and serves the Little Big Brain tools over stdio, the transport every
+ * environment and serves the little big brain tools over stdio, the transport every
  * editor (Claude Code, Cursor, Codex) supports.
  *
  *   LBB_BASE_URL  (default http://127.0.0.1:7400)
