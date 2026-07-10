@@ -22,7 +22,7 @@ reproduction steps if you have one.
 
 - The published package `@littlebigbrain/mcp` (npm) and the source in this
   repository.
-- For issues in the hosted Little Big Brain service itself
+- For issues in the hosted little big brain service itself
   (`*.littlebigbrain.com`), use the same channels — they reach the same team.
 
 ## Supported versions
