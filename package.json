@@ -1,7 +1,7 @@
 {
   "name": "@littlebigbrain/mcp",
   "version": "0.2.0",
-  "description": "MCP server for Little Big Brain \u2014 graph and hybrid search tools for agents",
+  "description": "MCP server for Little Big Brain — graph and hybrid search tools for agents",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -27,7 +27,7 @@
     }
   },
   "bin": {
-    "lbb-mcp": "./dist/stdio.js"
+    "lbb-mcp": "dist/stdio.js"
   },
   "files": [
     "dist",
