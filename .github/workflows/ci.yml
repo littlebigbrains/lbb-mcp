@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Lint + format (lint-only deps, not in the package manifest)
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            eslint@^10 @eslint/js@^10 typescript-eslint@^8 prettier@^3
+          npx eslint src
+          npx prettier --check "src/**/*.ts"
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests + coverage
+        run: npm run test:coverage
+      - name: Build + publint + arethetypeswrong
+        run: npm run pack:check
+      - name: Tarball content assertion
+        run: |
+          npm pack --json > pack.json
+          node -e '
+            const files = require("./pack.json")[0].files.map((f) => f.path);
+            const bad = files.filter(
+              (p) => !(p.startsWith("dist/") || p === "README.md" || p === "LICENSE" || p === "package.json"),
+            );
+            if (bad.length) { console.error("unexpected files in tarball:", bad); process.exit(1); }
+            for (const required of ["dist/index.js", "dist/stdio.js"]) {
+              if (!files.includes(required)) { console.error(required, "missing from tarball"); process.exit(1); }
+            }
+          '
+      - name: Installed-bin smoke (stdio initialize handshake)
+        run: |
+          set -euo pipefail
+          tarball=$(node -p "require('./pack.json')[0].filename")
+          npm install -g "./${tarball}"
+          request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0.0.0"}}}'
+          response=$(printf '%s\n' "$request" | timeout 30 lbb-mcp | head -n 1)
+          echo "$response"
+          echo "$response" | node -e '
+            let data = "";
+            process.stdin.on("data", (c) => (data += c));
+            process.stdin.on("end", () => {
+              const msg = JSON.parse(data);
+              if (!msg.result || !msg.result.serverInfo) {
+                console.error("initialize response missing serverInfo");
+                process.exit(1);
+              }
+            });
+          '

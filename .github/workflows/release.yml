@@ -1,0 +1,57 @@
+name: release
+
+# Publishes @littlebigbrain/mcp to npm from a signed vX.Y.Z tag via npm
+# trusted publishing (OIDC) — no long-lived registry tokens. Release order:
+# the @littlebigbrain/client version this release depends on must already be
+# on npm (released from littlebigbrains/lbb-typescript) — CI's `npm ci` and the
+# dependency-resolvability check below both enforce that.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  version-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag matches package version; client dependency resolvable on npm
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./package.json').version")
+          [ "$tag" = "$version" ] || { echo "::error::tag v${tag} != package version ${version}"; exit 1; }
+          client_range=$(node -p "require('./package.json').dependencies['@littlebigbrain/client']")
+          echo "requires @littlebigbrain/client ${client_range}"
+          npm view "@littlebigbrain/client@${client_range}" version
+
+  publish-npm:
+    needs: [ci, version-check]
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) + provenance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # trusted publishing needs npm >= 11.5.1
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - name: Publish @littlebigbrain/mcp (skip if version already published)
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if npm view "@littlebigbrain/mcp@${version}" version >/dev/null 2>&1; then
+            echo "@littlebigbrain/mcp@${version} already on npm; skipping"
+            exit 0
+          fi
+          npm publish
