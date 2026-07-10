@@ -37,9 +37,12 @@ transport and security notes.
 
 ## Releases
 
-Maintainers release by pushing a signed `vX.Y.Z` tag, which publishes
-`@littlebigbrain/mcp` via npm trusted publishing after CI passes. Each release
-depends on a published `@littlebigbrain/client` version.
+When a canonical sync lands a package version that is not yet on npm, CI waits
+until its declared `@littlebigbrain/client` range is available, runs the
+release suite, and pauses at the protected `npm` environment. A maintainer
+approves that deployment; trusted publishing uploads `@littlebigbrain/mcp`,
+then CI creates the matching `vX.Y.Z` tag and GitHub Release. Scheduled CI
+retries the client-ordering gate, so no local tag push is required.
 
 ## Conduct & security
 
