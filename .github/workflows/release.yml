@@ -1,83 +1,109 @@
 name: release
 
-# Publishes @littlebigbrain/mcp to npm from a signed vX.Y.Z tag via npm
-# trusted publishing (OIDC) — no long-lived registry tokens. Release order:
-# the @littlebigbrain/client version this release depends on must already be
-# on npm (released from littlebigbrains/lbb-typescript) — CI's `npm ci` and the
-# dependency-resolvability check below both enforce that.
+# MCP publishes from a new version on public main after its declared client
+# dependency is available on npm. Public syncs can land client and MCP in
+# parallel, so an hourly retry closes that ordering gap without a maintainer
+# pushing tags or manually re-running workflows.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-
-  version-check:
+  preflight:
     runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.version.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
-      - name: Tag matches package version; client dependency resolvable on npm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: version
+        name: Detect a releasable unpublished package version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
           version=$(node -p "require('./package.json').version")
-          [ "$tag" = "$version" ] || { echo "::error::tag v${tag} != package version ${version}"; exit 1; }
+          node -e "const v=process.argv[1]; if (!/^\\d+\\.\\d+\\.\\d+([+-][0-9A-Za-z.-]+)?$/.test(v)) process.exit(1)" "$version" \
+            || { echo "::error::invalid package version: $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if npm view "@littlebigbrain/mcp@${version}" version >/dev/null 2>&1; then
+            echo "@littlebigbrain/mcp@${version} is already published; release is a no-op"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           client_range=$(node -p "require('./package.json').dependencies['@littlebigbrain/client']")
-          echo "requires @littlebigbrain/client ${client_range}"
-          npm view "@littlebigbrain/client@${client_range}" version
+          if npm view "@littlebigbrain/client@${client_range}" version >/dev/null 2>&1; then
+            echo "client dependency ${client_range} is available; MCP release is required"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "client dependency ${client_range} is not on npm yet; a scheduled run will retry"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    needs: [preflight]
+    if: ${{ needs.preflight.outputs.publish == 'true' }}
+    uses: ./.github/workflows/ci.yml
 
   publish-npm:
-    needs: [ci, version-check]
+    needs: [preflight, ci]
+    if: ${{ needs.preflight.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     environment: npm
     permissions:
       contents: read
-      id-token: write # npm trusted publishing (OIDC) + provenance
+      id-token: write
     steps:
       - uses: actions/checkout@v5
-      # No registry-url here: setup-node's registry-url writes an .npmrc with
-      # an _authToken=${NODE_AUTH_TOKEN} line, and npm treats that (even
-      # unset) as configured auth and never attempts the OIDC exchange —
-      # trusted publishing requires no auth config at all.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Update npm (trusted publishing needs >= 11.5.1; Node 24 images can bundle older)
-        run: |
-          npm install -g npm@^11.5.1
-          npm --version
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@^11.5.1
       - run: npm ci
       - run: npm run build
-      - name: Publish @littlebigbrain/mcp (skip if version already published)
+      - name: Verify package version and client dependency
+        env:
+          EXPECTED_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./package.json').version")
-          if npm view "@littlebigbrain/mcp@${version}" version >/dev/null 2>&1; then
-            echo "@littlebigbrain/mcp@${version} already on npm; skipping"
-            exit 0
-          fi
-          npm publish
+          actual=$(node -p "require('./package.json').version")
+          [ "$actual" = "$EXPECTED_VERSION" ] \
+            || { echo "::error::package version $actual != expected $EXPECTED_VERSION"; exit 1; }
+          client_range=$(node -p "require('./package.json').dependencies['@littlebigbrain/client']")
+          npm view "@littlebigbrain/client@${client_range}" version
+      - name: Publish @littlebigbrain/mcp
+        run: npm publish
 
   github-release:
-    needs: [publish-npm]
+    needs: [preflight, publish-npm]
+    if: ${{ needs.preflight.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
     permissions:
-      contents: write # create the GitHub Release object for the tag
+      contents: write
     steps:
       - uses: actions/checkout@v5
-      - name: Create the GitHub Release for the tag (idempotent)
+      - name: Create the version tag and GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release $tag already exists; nothing to do"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; nothing to do"
           else
-            gh release create "$tag" --verify-tag --title "$tag" --generate-notes
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
           fi
