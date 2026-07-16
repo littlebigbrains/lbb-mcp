@@ -1,12 +1,10 @@
 # @littlebigbrain/mcp
 
-Eleven task-shaped MCP tools for searching, querying, and writing a little big
-brain graph from Claude, Cursor, Codex, or another MCP client.
+Eleven task-shaped [MCP](https://modelcontextprotocol.io) tools that let Claude, Cursor, Codex, or any MCP client search, query, and write a [Little Big Brain](https://littlebigbrain.com) graph. Ships two ways: a hosted endpoint with OAuth sign-in, and a local stdio server.
 
-## Hosted OAuth
+## Hosted (OAuth) — recommended
 
-Use the hosted endpoint; the client opens WorkOS sign-in and your machine never
-stores a little big brain stack key:
+The client opens WorkOS sign-in; your machine never stores a Little Big Brain key. Point it at your stack:
 
 ```json
 {
@@ -18,7 +16,7 @@ stores a little big brain stack key:
 }
 ```
 
-Codex Desktop should use the origin plus a stack header:
+Codex sends the URL as an OAuth `resource`, so use the origin plus a stack header instead:
 
 ```json
 {
@@ -32,7 +30,9 @@ Codex Desktop should use the origin plus a stack header:
 }
 ```
 
-## Local stdio
+## Local (stdio)
+
+Run against any data-plane endpoint with a stack API key:
 
 ```json
 {
@@ -49,7 +49,7 @@ Codex Desktop should use the origin plus a stack header:
 }
 ```
 
-Set `LBB_GRAPH` or `LBB_BRANCH` when the scope is not `main`.
+Set `LBB_GRAPH` or `LBB_BRANCH` to target a scope other than `main`.
 
 ## Tools
 
@@ -67,11 +67,11 @@ Set `LBB_GRAPH` or `LBB_BRANCH` when the scope is not `main`.
 | `lbb_configure` | ontology, schema, and inference rules |
 | `lbb_index` | BM25, vector, and adjacency refresh |
 
-Read tools return compact structured envelopes by default. Use `detail`,
-`row_limit`, and returned cursors to page without silently truncating results.
-Write tools derive idempotency keys unless you provide one.
+Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
 
 ## Embed the server
+
+For self-hosting behind your own auth, the package also serves the tools over HTTP:
 
 ```ts
 import { createMcpHttpServer } from "@littlebigbrain/mcp";
@@ -79,12 +79,10 @@ import { createMcpHttpServer } from "@littlebigbrain/mcp";
 createMcpHttpServer({
   baseUrl: "https://db.eu.littlebigbrain.com",
   mcpPath: "/mcp",
-  allowedHosts: ["127.0.0.1", "localhost", "::1", "[::1]"],
+  allowedHosts: ["127.0.0.1", "localhost", "::1"],
 }).listen(8080, "127.0.0.1");
 ```
 
-The embedded HTTP server passes a key bearer to the database and is for
-self-hosting behind your own auth. The hosted endpoint's OAuth/ownership layer
-is served by the little big brain API.
+The embedded server passes a key bearer to the data plane; the hosted endpoint's OAuth and ownership layer is served separately by the Little Big Brain API.
 
-Full tool schemas and examples: [MCP documentation](https://docs.littlebigbrain.com/sdks/mcp/).
+Full tool schemas and examples: [docs.littlebigbrain.com/sdks/mcp](https://docs.littlebigbrain.com/sdks/mcp/).
