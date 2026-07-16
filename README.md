@@ -41,7 +41,7 @@ Run against any data-plane endpoint with a stack API key:
       "command": "npx",
       "args": ["-y", "@littlebigbrain/mcp"],
       "env": {
-        "LBB_BASE_URL": "https://db.eu.littlebigbrain.com",
+        "LBB_BASE_URL": "https://0abc1def--production.db.eu.littlebigbrain.com",
         "LBB_API_KEY": "lbb_sk_live_..."
       }
     }
@@ -50,6 +50,9 @@ Run against any data-plane endpoint with a stack API key:
 ```
 
 Set `LBB_GRAPH` or `LBB_BRANCH` to target a scope other than `main`.
+`LBB_BASE_URL` has no hosted default: copy `endpoint_url` from the stack's
+Connect page. The MCP process exits with a configuration error when it is
+missing.
 
 ## Tools
 
@@ -77,7 +80,7 @@ For self-hosting behind your own auth, the package also serves the tools over HT
 import { createMcpHttpServer } from "@littlebigbrain/mcp";
 
 createMcpHttpServer({
-  baseUrl: "https://db.eu.littlebigbrain.com",
+  baseUrl: "https://0abc1def--production.db.eu.littlebigbrain.com",
   mcpPath: "/mcp",
   allowedHosts: ["127.0.0.1", "localhost", "::1"],
 }).listen(8080, "127.0.0.1");

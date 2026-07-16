@@ -8,9 +8,10 @@ import {
 } from "./http-server.js";
 
 type Response = { status: number; body: string };
+const TEST_BASE_URL = "https://0abc1def--research.db.eu.littlebigbrain.com";
 
-async function listeningServer(options: McpHttpServerOptions = {}) {
-  const server = createMcpHttpServer(options);
+async function listeningServer(options: Partial<McpHttpServerOptions> = {}) {
+  const server = createMcpHttpServer({ baseUrl: TEST_BASE_URL, ...options });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -59,16 +60,20 @@ async function close(
 }
 
 test("HTTP edge validates configuration before listening", () => {
+  assert.throws(
+    () => createMcpHttpServer({ baseUrl: "" }),
+    /baseUrl is required/,
+  );
   let caught: unknown;
   try {
-    createMcpHttpServer({ mcpPath: "mcp" });
+    createMcpHttpServer({ baseUrl: TEST_BASE_URL, mcpPath: "mcp" });
   } catch (error) {
     caught = error;
   }
   assert.match(String(caught), /mcpPath must start with/);
   let invalidSize = false;
   try {
-    createMcpHttpServer({ maxBodyBytes: 0 });
+    createMcpHttpServer({ baseUrl: TEST_BASE_URL, maxBodyBytes: 0 });
   } catch {
     invalidSize = true;
   }
@@ -157,7 +162,7 @@ test("HTTP edge redacts unexpected internal errors", async () => {
     );
     assert.equal(observed.length, 1);
     assert.deepEqual(clientOptions, {
-      baseUrl: "https://db.eu.littlebigbrain.com",
+      baseUrl: TEST_BASE_URL,
       apiKey: "secret",
       graph: "research",
       branch: "review",
