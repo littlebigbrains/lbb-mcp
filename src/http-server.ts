@@ -21,7 +21,8 @@ class HttpProblem extends Error {
 }
 
 export interface McpHttpServerOptions {
-  baseUrl?: string;
+  /** Required Little Big Brain stack endpoint (`endpoint_url` from Connect). */
+  baseUrl: string;
   mcpPath?: string;
   maxBodyBytes?: number;
   requestTimeoutMs?: number;
@@ -140,15 +141,18 @@ export function readJsonBody(
  * Build the key-bearer streamable-HTTP MCP edge without starting a listener.
  * The hosted multi-tenant OAuth endpoint remains in the SaaS API.
  */
-export function createMcpHttpServer(
-  options: McpHttpServerOptions = {},
-): Server {
-  const baseUrl = options.baseUrl ?? "https://db.eu.littlebigbrain.com";
+export function createMcpHttpServer(options: McpHttpServerOptions): Server {
+  const baseUrl = options.baseUrl.trim();
   const mcpPath = options.mcpPath ?? "/mcp";
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   const allowedHosts = options.allowedHosts;
   const allowedOrigins = options.allowedOrigins ?? [];
+  if (!baseUrl) {
+    throw new Error(
+      "baseUrl is required; copy endpoint_url from the stack's Connect page",
+    );
+  }
   if (!mcpPath.startsWith("/")) throw new Error("mcpPath must start with /");
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes <= 0) {
     throw new Error("maxBodyBytes must be a positive integer");

@@ -24,8 +24,14 @@ function csv(value: string | undefined): string[] | undefined {
 }
 
 const mcpPath = process.env.LBB_MCP_PATH ?? "/mcp";
+const baseUrl = process.env.LBB_BASE_URL?.trim();
+if (!baseUrl) {
+  throw new Error(
+    "LBB_BASE_URL is required. Copy endpoint_url from your stack's Connect page, for example https://<tenant-short-id>--<stack-slug>.db.eu.littlebigbrain.com",
+  );
+}
 const httpServer = createMcpHttpServer({
-  baseUrl: process.env.LBB_BASE_URL ?? "https://db.eu.littlebigbrain.com",
+  baseUrl,
   mcpPath,
   allowedHosts:
     csv(process.env.LBB_MCP_ALLOWED_HOSTS) ??
