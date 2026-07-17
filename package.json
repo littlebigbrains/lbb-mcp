@@ -1,6 +1,6 @@
 {
   "name": "@littlebigbrain/mcp",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "MCP server for little big brain — graph and hybrid search tools for agents",
   "license": "Apache-2.0",
   "repository": {
