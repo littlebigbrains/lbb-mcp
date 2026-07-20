@@ -52,7 +52,7 @@
     "test:coverage": "npm run clean:test && tsc -p tsconfig.test.json && node --test --experimental-test-coverage --test-coverage-include=test-dist/*.js --test-coverage-exclude=test-dist/*.test.js --test-coverage-exclude=test-dist/stdio.js --test-coverage-exclude=test-dist/test-support.js --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=85 \"test-dist/**/*.test.js\""
   },
   "dependencies": {
-    "@littlebigbrain/client": "^0.6.0",
+    "@littlebigbrain/client": "^0.7.0",
     "@modelcontextprotocol/sdk": "^1",
     "zod": "^3"
   },
