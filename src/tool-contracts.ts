@@ -71,11 +71,6 @@ export const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const jsonObjectArraySchema = z.array(jsonObjectSchema);
 export const readScope = { detail: detailSchema, ...graphScope };
 
-// Typed shape for inference rules (define_rules / infer / shacl include_derived).
-// Advertising the structure is what makes a rule's full power discoverable: a
-// term can be a fixed entity (not just a variable), so a rule can match or derive
-// a constant value (e.g. a status); and `not_exists` adds stratified negation, so
-// a rule can express a universal condition like "all children complete".
 export const entitySelectorSchema = z
   .object({
     entity_type: z
@@ -143,66 +138,6 @@ export const searchFeedbackSchema = z
       .min(1),
   })
   .passthrough();
-export const ruleTermSchema = z
-  .union([
-    z
-      .object({
-        var: z.string().describe("A variable, joined across patterns by name"),
-      })
-      .passthrough(),
-    z.object({ entity: entitySelectorSchema }).passthrough(),
-  ])
-  .describe(
-    'A rule term: { "var": "x" } (a variable) or { "entity": { "entity_type": "DeliveryStatus", "name": "Complete" } } (a fixed entity used as a constant in the body or head)',
-  );
-export const ruleTriplePatternSchema = z
-  .object({
-    subject: ruleTermSchema.optional(),
-    predicate: z
-      .string()
-      .optional()
-      .describe(
-        'Relation name. In a rule body, the reserved "rdf:type" makes a type-membership constraint: the object names a class ({ entity: { entity_type: "Contact" } }, no name) and matches every entity of that class and its subtypes (rdfs:subClassOf closure), so one rule keyed on a supertype fires for all subtypes. Not allowed in a head or an exists/not_exists filter.',
-      ),
-    object: ruleTermSchema.optional(),
-  })
-  .passthrough();
-export const ruleCombinatorSchema = z
-  .union([
-    z.object({ exists: z.array(ruleTriplePatternSchema) }).passthrough(),
-    z.object({ not_exists: z.array(ruleTriplePatternSchema) }).passthrough(),
-  ])
-  .describe(
-    "An existence filter over the body solutions: { exists: [...] } (semijoin — keep rows with a compatible match) or { not_exists: [...] } (negation/antijoin — keep rows with none)",
-  );
-export const inferenceRuleSchema = z
-  .object({
-    name: z.string(),
-    order: z
-      .number()
-      .int()
-      .optional()
-      .describe("Run order, low to high (a determinism hint)"),
-    body: z
-      .array(ruleTriplePatternSchema)
-      .optional()
-      .describe(
-        "The condition: a basic graph pattern over current edges (asserted + already-derived), joined on shared variables. Terms may be variables or fixed entities.",
-      ),
-    combinators: z
-      .array(ruleCombinatorSchema)
-      .optional()
-      .describe(
-        'exists/not_exists filters folded over the body. not_exists is stratified negation — it lets a rule express a universal condition, e.g. derive "phase complete" only when not_exists an incomplete deliverable. A negation cycle is rejected.',
-      ),
-    head: ruleTriplePatternSchema
-      .optional()
-      .describe(
-        "The triple derived once per body solution. Every head variable must be bound by the body; a fixed-entity object derives a constant (e.g. set the rolled-up status to the Complete entity).",
-      ),
-  })
-  .passthrough();
-export const inferenceRuleArraySchema = z.array(inferenceRuleSchema);
 export const ontologyFormatSchema = z.enum([
   "auto",
   "turtle",
@@ -232,7 +167,7 @@ export const shapeSourceSchema = z
     format: shapeFormatSchema.optional(),
   })
   .strict();
-export const schemaModeSchema = z.enum(["warn", "reject"]);
+export const schemaModeSchema = z.enum(["off", "warn", "reject"]);
 export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
   z
     .object({
@@ -418,19 +353,6 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
     .object({ action: z.literal("ontology_conformance"), ...readScope })
     .strict(),
   z.object({ action: z.literal("schema"), ...readScope }).strict(),
-  z.object({ action: z.literal("schema_audit"), ...readScope }).strict(),
-  z.object({ action: z.literal("rules"), ...readScope }).strict(),
-  z
-    .object({
-      action: z.literal("schema_preview"),
-      ontology: ontologySourceSchema.optional(),
-      shapes: shapeSourceSchema.optional(),
-      base_ontology_version: z.number().int().nonnegative().optional(),
-      base_shapes_version: z.number().int().nonnegative().optional(),
-      desired_mode: schemaModeSchema.optional(),
-      ...readScope,
-    })
-    .strict(),
   z
     .object({
       action: z.literal("ontology_search"),
@@ -465,58 +387,6 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
         .describe(
           "Snapshot pin: reproduce the node (state, edges, history) as of this commit_seq.",
         ),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("edges"),
-      entity_id: z
-        .string()
-        .optional()
-        .describe("Entity id (hex); alternative to entity_type+name"),
-      entity_type: z.string().optional(),
-      name: z.string().optional(),
-      direction: z
-        .enum(["out", "in", "both"])
-        .optional()
-        .describe("Edges out of / into / touching the entity (default both)."),
-      relation: z
-        .string()
-        .optional()
-        .describe("Filter to a single relation name."),
-      row_limit: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe(
-          "Max edges returned this page (server caps at 1000; default 150).",
-        ),
-      cursor: z
-        .string()
-        .optional()
-        .describe(
-          "Opaque cursor from the previous page's `next_cursor`. The response is the unified list envelope { object:'list', data, has_more, next_cursor, total_count }; page a high-degree node (entity detail hard-caps its edge sample) by feeding next_cursor back here until has_more is false. Each row carries valid_time for a per-edge timeline.",
-        ),
-      offset: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe(
-          "Legacy alias for `cursor` (still accepted); prefer paging with `cursor`.",
-        ),
-      as_of: z
-        .string()
-        .optional()
-        .describe("Valid-time snapshot pin (RFC3339)."),
-      as_of_commit_seq: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe("Snapshot pin: list edges as of this commit_seq."),
       ...readScope,
     })
     .strict(),
@@ -657,54 +527,6 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
     .strict(),
   z
     .object({
-      mode: z.literal("shacl"),
-      shacl_mode: z
-        .enum(["select", "validate"])
-        .optional()
-        .describe("select returns focus nodes; validate returns a report"),
-      shapes: jsonObjectArraySchema.optional(),
-      rules: inferenceRuleArraySchema.optional(),
-      include_derived: z.boolean().optional(),
-      as_of: z.string().optional(),
-      explain: z.boolean().optional(),
-      top_k: z.number().int().positive().optional(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      mode: z.literal("infer"),
-      rules: inferenceRuleArraySchema.optional(),
-      as_of: z.string().optional(),
-      as_of_commit_seq: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe(
-          "Snapshot pin: run inference as of this commit_seq. Errors if past head.",
-        ),
-      max_rounds: z.number().int().positive().optional(),
-      max_derived: z.number().int().positive().optional(),
-      max_solutions: z.number().int().positive().optional(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      mode: z.literal("retrieval_premises"),
-      anchor_type: z.string(),
-      anchor_name: z.string(),
-      relation: z.string(),
-      query: z.string(),
-      threshold: z.number().min(0).max(1).optional(),
-      max_premises: z.number().int().positive().optional(),
-      query_top_k: z.number().int().positive().optional(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
       mode: z.literal("analyze"),
       metric: z
         .enum(["entity_types", "relations", "overview", "facets", "sparql"])
@@ -734,19 +556,10 @@ export const configureInputSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.literal("define_rules"),
-      rules: inferenceRuleArraySchema,
-      confirm_empty: z.boolean().optional(),
-      ...graphScope,
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal("publish_schema"),
-      preview_digest: z.string(),
-      shapes: shapeSourceSchema,
       ontology: ontologySourceSchema.optional(),
-      desired_mode: schemaModeSchema,
+      shapes: shapeSourceSchema.optional(),
+      desired_mode: schemaModeSchema.optional(),
       confirm_restrictive: z.boolean().optional(),
       ...graphScope,
     })
@@ -776,8 +589,8 @@ export const configureInputSchema = z.discriminatedUnion("action", [
  * schema is a ZodObject (the SDK reads `.shape` via `normalizeObjectSchema`). A
  * `z.discriminatedUnion` has `.options`, not `.shape`, so the SDK silently falls
  * back to an empty `{ type: "object", properties: {} }` advertisement — and
- * clients then stringify every object-valued argument (the `schema_preview`
- * `ontology`/`shapes` sources, the structured-query `body`, …), which the server
+ * clients then stringify every object-valued argument (for example, the
+ * structured-query `body`), which the server
  * rejects as `Expected object, received string`.
  *
  * Flatten the union into a single ZodObject purely for advertisement and
