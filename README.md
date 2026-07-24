@@ -1,6 +1,6 @@
 # @littlebigbrain/mcp
 
-Eleven task-shaped [MCP](https://modelcontextprotocol.io) tools that let Claude, Cursor, Codex, or any MCP client search, query, and write a [Little Big Brain](https://littlebigbrain.com) graph. Ships two ways: a hosted endpoint with OAuth sign-in, and a local stdio server.
+Ten task-shaped [MCP](https://modelcontextprotocol.io) tools that let Claude, Cursor, Codex, or any MCP client search, query, and write a [Little Big Brain](https://littlebigbrain.com) graph. Ships two ways: a hosted endpoint with OAuth sign-in, and a local stdio server.
 
 ## Hosted (OAuth) — recommended
 
@@ -59,16 +59,15 @@ missing.
 | Tool | Use it for |
 | --- | --- |
 | `lbb_search` | hybrid retrieval, multi-query fusion, optional path following |
-| `lbb_ask` | grounded answers with citations |
 | `lbb_decode` | constrained relation decoding |
 | `lbb_ground` | vocabulary completion and resolution |
-| `lbb_inspect` | ontology, entity, state, history, provenance, traversal |
-| `lbb_query` | SPARQL, structured analytics, SHACL, inference |
+| `lbb_inspect` | ontology, schema, entity, state, history, provenance, traversal |
+| `lbb_query` | SPARQL and structured analytics |
 | `lbb_commit` | facts, properties, and embeddings |
 | `lbb_observe` | conversation episodes plus reviewed extraction |
 | `lbb_branch` | isolation branches and validated merge |
-| `lbb_configure` | ontology, schema, and inference rules |
-| `lbb_index` | BM25, vector, and adjacency refresh |
+| `lbb_models` | shadow evaluation and training datasets |
+| `lbb_configure` | ontology definition and atomic schema publication |
 
 Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
 
