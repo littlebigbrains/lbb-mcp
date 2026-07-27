@@ -3,6 +3,52 @@ import assert from "node:assert/strict";
 import { type FetchLike } from "@littlebigbrain/client";
 import { connect, ok, payload, type Call } from "./test-support.js";
 
+test("lbb_decode and lbb_models preserve published-root APIs", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({});
+  };
+  const client = await connect(fetch);
+
+  await client.callTool({
+    name: "lbb_decode",
+    arguments: {
+      source_name: "auth",
+      target_name: "database",
+      branch: "draft",
+    },
+  });
+  await client.callTool({
+    name: "lbb_models",
+    arguments: {
+      action: "shadow_eval",
+      body: { queries: [], challenger: {} },
+    },
+  });
+  await client.callTool({
+    name: "lbb_models",
+    arguments: {
+      action: "planner_dataset",
+      limit: 10,
+      split_seq: 7,
+    },
+  });
+  await client.callTool({
+    name: "lbb_inspect",
+    arguments: { action: "schema" },
+  });
+
+  assert.match(calls[0].input, /\/v1\/decode\?/);
+  assert.match(calls[0].input, /branch=draft/);
+  assert.match(calls[1].input, /\/v1\/models\/shadow-eval\?/);
+  assert.match(calls[2].input, /\/v1\/models\/planner-dataset\?/);
+  assert.match(calls[2].input, /limit=10/);
+  assert.match(calls[2].input, /split_seq=7/);
+  assert.match(calls[3].input, /\/v1\/schema\?/);
+  await client.close();
+});
+
 test("lbb_search routes single, multi, and path-following retrieval modes", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -206,267 +252,7 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, why, a
   await client.close();
 });
 
-test("lbb_inspect entity flags a display-capped edge sample with runnable paged reads", async () => {
-  // A high-degree node: the server returns the full arrays, but the display caps
-  // them to the detail limit while counts holds the true totals. The response
-  // must point at the paged edges/history reads so the workaround is discoverable
-  // in-band rather than tribal knowledge.
-  const fetch: FetchLike = async (input) => {
-    if (input.includes("/v1/graph/entity")) {
-      return ok({
-        entity: { entity_type: "Component", name: "docs" },
-        current_state: [],
-        attributes: {},
-        metadata: {},
-        observations: [],
-        outgoing: Array.from({ length: 2 }, (_, i) => ({
-          relation: "OWNS",
-          target: `t${i}`,
-        })),
-        incoming: Array.from({ length: 345 }, (_, i) => ({
-          relation: "TOUCHES",
-          source: `c${i}`,
-        })),
-        history: Array.from({ length: 40 }, (_, i) => ({
-          relation: "TOUCHES",
-          commit_seq: i,
-        })),
-        snapshot: {},
-      });
-    }
-    return ok({});
-  };
-  const client = await connect(fetch);
-  const result = payload(
-    await client.callTool({
-      name: "lbb_inspect",
-      arguments: { action: "entity", entity_type: "Component", name: "docs" },
-    }),
-  );
-  const hint = (
-    result as unknown as {
-      edge_sample?: {
-        capped_totals?: Record<string, number>;
-        full_reads?: { tool: string; arguments: Record<string, unknown> }[];
-        note?: string;
-      };
-    }
-  ).edge_sample;
-  assert.ok(hint, "expected an edge_sample hint on a high-degree node");
-  // incoming (345) and history (40) exceed the compact cap of 5; outgoing (2) does not.
-  assert.equal(hint!.capped_totals?.incoming, 345);
-  assert.equal(hint!.capped_totals?.history, 40);
-  assert.equal(hint!.capped_totals?.outgoing, undefined);
-  const reads = hint!.full_reads ?? [];
-  const incomingRead = reads.find(
-    (r) => r.arguments.action === "edges" && r.arguments.direction === "in",
-  );
-  assert.ok(
-    incomingRead,
-    "expected a runnable paged edges read for the capped incoming edges",
-  );
-  assert.equal(incomingRead!.arguments.entity_type, "Component");
-  assert.equal(incomingRead!.arguments.name, "docs");
-  assert.ok(
-    reads.some((r) => r.arguments.action === "history"),
-    "expected a paged history read",
-  );
-  assert.ok(
-    !reads.some((r) => r.arguments.direction === "out"),
-    "must not advertise a paged read for the uncapped outgoing edges",
-  );
-  await client.close();
-});
-
-test("lbb_inspect entity omits the edge-cap hint when the sample is not capped", async () => {
-  const fetch: FetchLike = async (input) => {
-    if (input.includes("/v1/graph/entity")) {
-      return ok({
-        entity: { entity_type: "Component", name: "tiny" },
-        current_state: [],
-        attributes: {},
-        metadata: {},
-        observations: [],
-        outgoing: [{ relation: "OWNS", target: "t0" }],
-        incoming: [{ relation: "TOUCHES", source: "c0" }],
-        history: [],
-        snapshot: {},
-      });
-    }
-    return ok({});
-  };
-  const client = await connect(fetch);
-  const result = payload(
-    await client.callTool({
-      name: "lbb_inspect",
-      arguments: {
-        action: "entity",
-        entity_type: "Component",
-        name: "tiny",
-        detail: "full",
-      },
-    }),
-  );
-  assert.equal(
-    (result as unknown as { edge_sample?: unknown }).edge_sample,
-    undefined,
-  );
-  await client.close();
-});
-
-test("lbb_inspect edges pages one entity's edges with direction and a snapshot pin", async () => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({
-      object: "list",
-      data: [],
-      has_more: true,
-      next_cursor: "300",
-      snapshot: {},
-      total_count: 782,
-    });
-  };
-  const client = await connect(fetch);
-
-  const result = await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
-      action: "edges",
-      entity_type: "PERSON",
-      name: "ada",
-      direction: "out",
-      row_limit: 150,
-      cursor: "150",
-      as_of_commit_seq: 42,
-    },
-  });
-
-  const input = calls[0].input;
-  assert.match(input, /\/v1\/graph\/edges\?/);
-  assert.match(input, /type=PERSON/);
-  assert.match(input, /name=ada/);
-  assert.match(input, /direction=out/);
-  assert.match(input, /limit=150/);
-  assert.match(input, /cursor=150/);
-  assert.match(input, /as_of_commit_seq=42/);
-  // The unified list envelope surfaces total_count + next_cursor for paging.
-  const data = payload(result).data as {
-    total_count: number;
-    next_cursor: string;
-  };
-  assert.equal(data.total_count, 782);
-  assert.equal(data.next_cursor, "300");
-  await client.close();
-});
-
-test("lbb_inspect exposes RDF schema preview, audit, and stored rules", async () => {
-  const calls: Call[] = [];
-  const shapeSource = "@prefix sh: <http://www.w3.org/ns/shacl#> .";
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    if (input.includes("/v1/schema/preview")) {
-      return ok({
-        graph: { tenant_id: "acme", graph_id: "support", branch_id: "draft" },
-        verdict: "restrictive",
-        can_publish: false,
-        publish_mode_allowed: ["warn"],
-        preview_digest: "sha256:preview",
-        desired_mode: "reject",
-        proposed_ontology_version: 2,
-        proposed_shapes_version: 3,
-        diff: [
-          {
-            kind: "restrictive",
-            subject: "shape",
-            message: "requires more CALLS",
-          },
-        ],
-        audit: {
-          conforms: false,
-          result_count: 1,
-          results: [
-            { focus_node: "alpha", component: "MinCountConstraintComponent" },
-          ],
-          messages: ["one violation"],
-        },
-        messages: ["reject is not available until current data conforms"],
-      });
-    }
-    if (input.includes("/v1/schema/audit")) {
-      return ok({ conforms: true, result_count: 0, results: [] });
-    }
-    if (input.includes("/v1/inference/rules")) {
-      return ok({
-        version: 4,
-        rules: [{ name: "transitive_calls", body: [], head: {} }],
-      });
-    }
-    return ok({ enforce_mode: "warn", shape_count: 2 });
-  };
-  const client = await connect(fetch);
-
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: { action: "schema", graph: "support", branch: "draft" },
-  });
-  const preview = await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
-      action: "schema_preview",
-      graph: "support",
-      branch: "draft",
-      desired_mode: "reject",
-      base_shapes_version: 2,
-      shapes: { source: shapeSource, format: "turtle" },
-    },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: { action: "schema_audit", graph: "support", branch: "draft" },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: { action: "rules", graph: "support", branch: "draft" },
-  });
-
-  assert.match(calls[0].input, /\/v1\/schema\?/);
-  assert.match(calls[0].input, /graph=support/);
-  assert.match(calls[0].input, /branch=draft/);
-  assert.match(calls[1].input, /\/v1\/schema\/preview\?/);
-  const previewBody = JSON.parse(calls[1].init.body ?? "{}");
-  assert.equal(previewBody.desired_mode, "reject");
-  assert.equal(previewBody.base_shapes_version, 2);
-  assert.deepEqual(previewBody.shapes, {
-    source: shapeSource,
-    format: "turtle",
-  });
-  const previewData = payload(preview).data as {
-    audit: { result_count: number; sample_results: unknown[] };
-    suggested_publish_schema: { tool: string; args: Record<string, unknown> };
-  };
-  assert.equal(previewData.audit.result_count, 1);
-  assert.equal(previewData.audit.sample_results.length, 1);
-  assert.equal(previewData.suggested_publish_schema.tool, "lbb_configure");
-  assert.equal(
-    previewData.suggested_publish_schema.args.action,
-    "publish_schema",
-  );
-  assert.equal(previewData.suggested_publish_schema.args.desired_mode, "warn");
-  assert.equal(
-    previewData.suggested_publish_schema.args.confirm_restrictive,
-    true,
-  );
-  assert.deepEqual(previewData.suggested_publish_schema.args.shapes, {
-    source: shapeSource,
-    format: "turtle",
-  });
-  assert.match(calls[2].input, /\/v1\/schema\/audit\?/);
-  assert.match(calls[3].input, /\/v1\/inference\/rules\?/);
-  await client.close();
-});
-
-test("lbb_query routes structured, SPARQL text, SHACL, inference, retrieval premise, and analysis modes", async () => {
+test("lbb_query routes structured, SPARQL text, and analysis modes", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
@@ -508,63 +294,6 @@ test("lbb_query routes structured, SPARQL text, SHACL, inference, retrieval prem
   });
   await client.callTool({
     name: "lbb_query",
-    arguments: {
-      mode: "shacl",
-      shacl_mode: "validate",
-      shapes: [{ targetClass: "Customer" }],
-    },
-  });
-  // A rule that uses an entity-constant term and a not_exists combinator must
-  // pass the typed schema and route to the inference run endpoint — the shapes
-  // that make universal/constant roll-ups expressible.
-  await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "infer",
-      rules: [
-        {
-          name: "phase_complete",
-          body: [
-            {
-              subject: { var: "phase" },
-              predicate: "HAS_DELIVERABLE",
-              object: { var: "d" },
-            },
-          ],
-          combinators: [
-            {
-              not_exists: [
-                {
-                  subject: { var: "phase" },
-                  predicate: "HAS_INCOMPLETE_DELIVERABLE",
-                  object: { var: "x" },
-                },
-              ],
-            },
-          ],
-          head: {
-            subject: { var: "phase" },
-            predicate: "HAS_ROLLUP_STATUS",
-            object: {
-              entity: { entity_type: "DeliveryStatus", name: "Complete" },
-            },
-          },
-        },
-      ],
-    },
-  });
-  await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "retrieval_premises",
-      anchor_type: "Topic",
-      anchor_name: "Identity",
-      relation: "MATCHES",
-      query: "identity",
-    },
-  });
-  await client.callTool({
-    name: "lbb_query",
     arguments: { mode: "analyze", metric: "entity_types" },
   });
 
@@ -581,11 +310,7 @@ test("lbb_query routes structured, SPARQL text, SHACL, inference, retrieval prem
     (payload(sparql).data as { head: { vars: string[] } }).head.vars,
     ["s"],
   );
-  assert.match(calls[6].input, /\/v1\/query\/shacl\?/);
-  assert.equal(JSON.parse(calls[6].init.body ?? "{}").mode, "validate");
-  assert.match(calls[7].input, /\/v1\/inference\/run\?/);
-  assert.match(calls[8].input, /\/v1\/inference\/retrieval-premises\?/);
-  assert.match(calls[9].input, /\/v1\/graph\/summary\?/);
+  assert.match(calls[6].input, /\/v1\/graph\/summary\?/);
   await client.close();
 });
 
@@ -1283,7 +1008,7 @@ test("lbb_query structured elevates server-side truncation flags", async () => {
   await client.close();
 });
 
-test("lbb_query rejects fields outside the selected mode schema", async () => {
+test("lbb_query rejects retired query modes", async () => {
   const client = await connect(async () => ok());
 
   const result = await client.callTool({
@@ -1294,7 +1019,7 @@ test("lbb_query rejects fields outside the selected mode schema", async () => {
   assert.equal(result.isError, true);
   assert.match(
     (result.content as { type: string; text: string }[])[0].text,
-    /body/,
+    /mode|discriminator/i,
   );
   await client.close();
 });

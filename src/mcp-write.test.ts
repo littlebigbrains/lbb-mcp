@@ -3,9 +3,8 @@ import assert from "node:assert/strict";
 import { type FetchLike } from "@littlebigbrain/client";
 import { connect, ok, type Call } from "./test-support.js";
 
-test("lbb_configure defines ontologies, publishes schemas, and stores rules", async () => {
+test("lbb_configure defines ontologies and atomically publishes schemas", async () => {
   const calls: Call[] = [];
-  const shapeSource = "@prefix sh: <http://www.w3.org/ns/shacl#> .";
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
     return ok({ ok: true });
@@ -27,19 +26,11 @@ test("lbb_configure defines ontologies, publishes schemas, and stores rules", as
       action: "publish_schema",
       graph: "support",
       branch: "draft",
-      preview_digest: "sha256:preview",
+      shapes: {
+        source: "@prefix sh: <http://www.w3.org/ns/shacl#> .",
+        format: "turtle",
+      },
       desired_mode: "warn",
-      confirm_restrictive: true,
-      shapes: { source: shapeSource, format: "turtle" },
-    },
-  });
-  await client.callTool({
-    name: "lbb_configure",
-    arguments: {
-      action: "define_rules",
-      graph: "support",
-      branch: "draft",
-      rules: [{ name: "knows", body: [], head: {} }],
     },
   });
 
@@ -56,18 +47,9 @@ test("lbb_configure defines ontologies, publishes schemas, and stores rules", as
   assert.match(calls[1].input, /\/v1\/schema\/publish\?/);
   assert.match(calls[1].input, /graph=support/);
   assert.match(calls[1].input, /branch=draft/);
-  const publishBody = JSON.parse(calls[1].init.body ?? "{}");
-  assert.equal(publishBody.preview_digest, "sha256:preview");
-  assert.equal(publishBody.desired_mode, "warn");
-  assert.equal(publishBody.confirm_restrictive, true);
-  assert.deepEqual(publishBody.shapes, {
-    source: shapeSource,
-    format: "turtle",
-  });
-  assert.match(calls[2].input, /\/v1\/inference\/rules\?/);
-  assert.match(calls[2].input, /graph=support/);
-  assert.match(calls[2].input, /branch=draft/);
-  assert.equal(JSON.parse(calls[2].init.body ?? "{}").rules[0].name, "knows");
+  const schemaBody = JSON.parse(calls[1].init.body ?? "{}");
+  assert.equal(schemaBody.desired_mode, "warn");
+  assert.match(schemaBody.shapes.source, /shacl/);
   await client.close();
 });
 
@@ -227,42 +209,19 @@ test("lbb_configure evolve_ontology rejects an op outside the union", async () =
   await client.close();
 });
 
-test("lbb_configure rejects unsafe schema and rule mutations", async () => {
+test("lbb_configure rejects an empty schema publication", async () => {
   const client = await connect(async () => ok());
 
-  const missingRules = await client.callTool({
+  const emptyPublish = await client.callTool({
     name: "lbb_configure",
-    arguments: { action: "define_rules" },
+    arguments: { action: "publish_schema" },
   });
-  assert.equal(missingRules.isError, true);
+  assert.equal(emptyPublish.isError, true);
   assert.match(
-    (missingRules.content as { type: string; text: string }[])[0].text,
-    /rules/,
+    (emptyPublish.content as { type: string; text: string }[])[0].text,
+    /ontology or shapes/,
   );
 
-  const emptyRules = await client.callTool({
-    name: "lbb_configure",
-    arguments: { action: "define_rules", rules: [] },
-  });
-  assert.equal(emptyRules.isError, true);
-  assert.match(
-    (emptyRules.content as { type: string; text: string }[])[0].text,
-    /confirm_empty/,
-  );
-
-  const missingShapes = await client.callTool({
-    name: "lbb_configure",
-    arguments: {
-      action: "publish_schema",
-      preview_digest: "sha256:preview",
-      desired_mode: "warn",
-    },
-  });
-  assert.equal(missingShapes.isError, true);
-  assert.match(
-    (missingShapes.content as { type: string; text: string }[])[0].text,
-    /shapes/,
-  );
   await client.close();
 });
 
@@ -355,19 +314,6 @@ test("lbb_observe posts the episode + facts with an idempotency key", async () =
     headers["idempotency-key"],
     "observe is a write and must carry a key",
   );
-  await client.close();
-});
-
-test("lbb_index runs the persisted index build", async () => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({ indexed: true });
-  };
-  const client = await connect(fetch);
-  await client.callTool({ name: "lbb_index", arguments: { background: true } });
-  assert.match(calls[0].input, /\/v1\/index\/run\?/);
-  assert.match(calls[0].input, /background=true/);
   await client.close();
 });
 

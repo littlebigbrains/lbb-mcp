@@ -3,13 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type FetchLike } from "@littlebigbrain/client";
 import * as publicApi from "./index.js";
-import {
-  canonicalize,
-  connect,
-  ok,
-  payload,
-  type Call,
-} from "./test-support.js";
+import { canonicalize, connect, ok, type Call } from "./test-support.js";
 
 test("pins the programmatic MCP package entrypoint", () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [
@@ -23,14 +17,13 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   const client = await connect(async () => ok());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-    "lbb_ask",
     "lbb_branch",
     "lbb_commit",
     "lbb_configure",
     "lbb_decode",
     "lbb_ground",
-    "lbb_index",
     "lbb_inspect",
+    "lbb_models",
     "lbb_observe",
     "lbb_query",
     "lbb_search",
@@ -38,18 +31,16 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
 
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
   assert.equal(byName.lbb_search.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_decode.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_models.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_inspect.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_query.annotations?.readOnlyHint, true);
-  // The substrate grounding/reasoning tools are all read-only (they may call a
-  // model, but they never mutate the graph).
-  assert.equal(byName.lbb_ask.annotations?.readOnlyHint, true);
-  assert.equal(byName.lbb_decode.annotations?.readOnlyHint, true);
+  // Published-vocabulary completion is read-only.
   assert.equal(byName.lbb_ground.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
   assert.equal(byName.lbb_configure.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_configure.annotations?.idempotentHint, undefined);
-  assert.equal(byName.lbb_index.annotations?.readOnlyHint, false);
   assert.match(byName.lbb_search.description ?? "", /mode=search_feedback/);
   assert.match(byName.lbb_search.description ?? "", /good=3, partial=1, bad=0/);
   assert.match(
@@ -99,30 +90,16 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "3c79f5024872720ae2116bae12b1cb702b537244caaa9276c88b7e31af74f3fe",
+    "8a6610def3c118fb49c849040e4323f9724c2f4e81c30a38f5fdb536a93f88dc",
   );
   await client.close();
 });
 
-test("lbb_ask / lbb_decode / lbb_ground route the context-substrate surfaces", async () => {
+test("lbb_ground routes completion, resolution, and groundability", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
     const url = String(input);
-    if (url.includes("/v1/ask"))
-      return ok({
-        mode: "resident_planner",
-        answer: "user-db.",
-        citations: [],
-      });
-    if (url.includes("/v1/decode")) {
-      return ok({
-        relation: "TOUCHES",
-        mode: "forced",
-        candidates: ["TOUCHES"],
-        signature_forced: true,
-      });
-    }
     if (url.includes("/v1/search/suggest")) {
       return ok({
         suggestions: [
@@ -135,61 +112,9 @@ test("lbb_ask / lbb_decode / lbb_ground route the context-substrate surfaces", a
         ],
       });
     }
-    if (url.includes("/v1/search/resolve-term"))
-      return ok({
-        matches: [{ text: "PullRequest", kind: "class", score: 0.8 }],
-        method: "embedding",
-      });
-    if (url.includes("/v1/graph/groundability"))
-      return ok({ recommendation: "narrow", forced_pct: 0.83 });
     return ok({});
   };
   const client = await connect(fetch);
-
-  // lbb_ask -> POST /v1/ask with the question.
-  const ask = await client.callTool({
-    name: "lbb_ask",
-    arguments: { question: "what stores identity data", top_k: 5 },
-  });
-  assert.match(calls.at(-1)!.input, /\/v1\/ask\?/);
-  assert.equal(
-    JSON.parse(calls.at(-1)!.init.body ?? "{}").question,
-    "what stores identity data",
-  );
-  assert.equal(
-    (payload(ask).data as { mode: string }).mode,
-    "resident_planner",
-  );
-
-  // The bitemporal cursor rides through to the ask body.
-  await client.callTool({
-    name: "lbb_ask",
-    arguments: {
-      question: "what stored identity data last month",
-      as_of_commit_seq: 9,
-    },
-  });
-  assert.equal(JSON.parse(calls.at(-1)!.init.body ?? "{}").as_of_commit_seq, 9);
-
-  // lbb_decode -> POST /v1/decode with the nested source/target the API expects.
-  const decode = await client.callTool({
-    name: "lbb_decode",
-    arguments: {
-      source_name: "00428ce",
-      source_type: "Commit",
-      target_name: "lbb-graph-query",
-      target_type: "Component",
-    },
-  });
-  assert.match(calls.at(-1)!.input, /\/v1\/decode\?/);
-  const decodeBody = JSON.parse(calls.at(-1)!.init.body ?? "{}");
-  assert.equal(decodeBody.source.name, "00428ce");
-  assert.equal(decodeBody.source.type, "Commit");
-  assert.equal(decodeBody.target.type, "Component");
-  assert.equal(
-    (payload(decode).data as { relation: string }).relation,
-    "TOUCHES",
-  );
 
   // lbb_ground action=complete -> POST /v1/search/suggest, narrowing context passed.
   await client.callTool({
@@ -207,21 +132,18 @@ test("lbb_ask / lbb_decode / lbb_ground route the context-substrate surfaces", a
   assert.equal(suggestBody.context.src_type, "Commit");
   assert.equal(suggestBody.context.dst_type, "Component");
 
-  // lbb_ground action=resolve -> POST /v1/search/resolve-term.
   await client.callTool({
     name: "lbb_ground",
-    arguments: { action: "resolve", text: "writes to" },
+    arguments: { action: "resolve", text: "touches" },
   });
   assert.match(calls.at(-1)!.input, /\/v1\/search\/resolve-term\?/);
-  assert.equal(JSON.parse(calls.at(-1)!.init.body ?? "{}").text, "writes to");
 
-  // lbb_ground action=audit -> GET /v1/graph/groundability.
   await client.callTool({
     name: "lbb_ground",
-    arguments: { action: "audit", sample: 32 },
+    arguments: { action: "audit", sample: 25 },
   });
-  assert.match(calls.at(-1)!.input, /\/v1\/graph\/groundability/);
-  assert.equal(calls.at(-1)!.init.method, "GET");
+  assert.match(calls.at(-1)!.input, /\/v1\/graph\/groundability\?/);
+  assert.match(calls.at(-1)!.input, /sample=25/);
 
   await client.close();
 });
@@ -241,8 +163,8 @@ test("dispatch tools advertise real object input schemas (regression: object arg
   // lbb_inspect/lbb_query/lbb_configure dispatch on a discriminant, so their
   // schemas are z.discriminatedUnion. The MCP SDK only advertises a JSON Schema for
   // a ZodObject (it reads `.shape`); a union advertised an empty `properties: {}`,
-  // which made clients stringify object-valued args (the schema_preview/publish
-  // `ontology`/`shapes` sources, the structured-query `body`) so the server rejected
+  // which made clients stringify object-valued args (publish-schema
+  // `ontology`/`shapes` sources and the structured-query `body`) so the server rejected
   // them as "Expected object, received string". Each tool must advertise a flattened
   // object schema with those object-valued fields typed as objects.
   const inspect = schemaOf("lbb_inspect");
@@ -251,28 +173,26 @@ test("dispatch tools advertise real object input schemas (regression: object arg
     Object.keys(inspect.properties).length > 1,
     "lbb_inspect must advertise real properties",
   );
-  assert.ok(inspect.properties.action?.enum?.includes("schema_preview"));
-  assert.equal(inspect.properties.ontology?.type, "object");
+  assert.ok(inspect.properties.action?.enum?.includes("ontology_search"));
   assert.ok(
-    inspect.properties.ontology?.properties?.source,
-    "ontology source is advertised as an object field",
+    !inspect.properties.action?.enum?.includes("edges"),
+    "lbb_inspect must not advertise the retired full edge-list action",
   );
-  assert.equal(inspect.properties.shapes?.type, "object");
+  assert.ok(inspect.properties.action?.enum?.includes("schema"));
+  assert.ok(!inspect.properties.action?.enum?.includes("schema_preview"));
+  assert.ok(!inspect.properties.action?.enum?.includes("schema_audit"));
 
   const query = schemaOf("lbb_query");
   assert.ok(query.properties.mode?.enum?.includes("structured"));
   assert.equal(query.properties.body?.type, "object");
 
   const configure = schemaOf("lbb_configure");
-  assert.ok(configure.properties.action?.enum?.includes("publish_schema"));
   assert.ok(configure.properties.action?.enum?.includes("evolve_ontology"));
-  assert.equal(configure.properties.ontology?.type, "object");
-  assert.equal(configure.properties.shapes?.type, "object");
-  assert.ok(configure.properties.shapes?.properties?.source);
   assert.ok(
-    configure.properties.preview_digest,
-    "publish_schema fields are advertised",
+    configure.properties.action?.enum?.includes("publish_schema"),
+    "atomic schema publication is advertised",
   );
+  assert.equal(configure.properties.shapes?.type, "object");
   assert.equal(
     configure.properties.ops?.type,
     "array",

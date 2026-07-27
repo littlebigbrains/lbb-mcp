@@ -537,61 +537,6 @@ export function toolResult(value: Record<string, unknown>) {
   };
 }
 
-// `lbb_inspect action=entity` returns the full incoming/outgoing/history arrays,
-// but the display truncates them to the detail cap (compact shows 5) while
-// `counts` still reports the true totals — so a high-degree node reads as "5
-// edges" unless the caller already knows to switch to the paged `edges`/`history`
-// reads. Make that self-documenting: when a sample is capped, attach the true
-// counts plus ready-to-run paged reads so the workaround is discoverable in the
-// response instead of tribal knowledge.
-export function entityEdgeCapHint(
-  data: unknown,
-  detail: string | undefined,
-  identity: Record<string, unknown>,
-): Record<string, unknown> {
-  if (!data || typeof data !== "object") return {};
-  const record = data as Record<string, unknown>;
-  const cap = compactLimits(normalizeDetail(detail)).maxItems;
-  const lengthOf = (field: string): number => {
-    const value = record[field];
-    return Array.isArray(value) ? value.length : 0;
-  };
-  const capped: Record<string, number> = {};
-  const fullReads: Record<string, unknown>[] = [];
-  const edgeReads: {
-    field: "incoming" | "outgoing";
-    direction: "in" | "out";
-  }[] = [
-    { field: "incoming", direction: "in" },
-    { field: "outgoing", direction: "out" },
-  ];
-  for (const { field, direction } of edgeReads) {
-    const total = lengthOf(field);
-    if (total > cap) {
-      capped[field] = total;
-      fullReads.push({
-        tool: "lbb_inspect",
-        arguments: { action: "edges", direction, ...identity },
-      });
-    }
-  }
-  if (lengthOf("history") > cap) {
-    capped.history = lengthOf("history");
-    fullReads.push({
-      tool: "lbb_inspect",
-      arguments: { action: "history", ...identity },
-    });
-  }
-  if (Object.keys(capped).length === 0) return {};
-  return {
-    edge_sample: {
-      note: `This node's edge/history arrays are a display sample capped at ${cap} per field; counts holds the true totals. Read the full set with these paged reads (cursor through them until has_more=false).`,
-      capped_totals: capped,
-      full_reads: fullReads,
-    },
-  };
-}
-
 export function errorResult(error: unknown) {
   const payload =
     error instanceof LbbError
@@ -790,8 +735,6 @@ export function searchBody(p: {
       lexical: mode === "hybrid" || mode === "lexical",
       bm25: mode === "hybrid" || mode === "bm25",
       vector: mode === "hybrid" || mode === "vector",
-      bm25_source: "persisted",
-      vector_source: "persisted",
       consistency: "strong",
       profile: resolveProfile(p.profile),
     },
@@ -867,10 +810,7 @@ export function sparqlKeyLabel(value: unknown): string {
   return String(value);
 }
 
-export function buildPossibilities(
-  relations: NamedCount[],
-  entityTypes: NamedCount[] = [],
-): unknown[] {
+export function buildPossibilities(relations: NamedCount[]): unknown[] {
   const possibilities: unknown[] = [
     {
       name: "Entity composition",
@@ -957,26 +897,6 @@ export function buildPossibilities(
       },
     );
   }
-  const topType = entityTypes[0]?.name;
-  if (top && topType) {
-    possibilities.push({
-      name: `${topType} nodes that participate in ${top}`,
-      description: `Select every ${topType} that is the source of at least one ${top} edge.`,
-      chart: "bar",
-      run: {
-        tool: "lbb_query",
-        args: {
-          mode: "shacl",
-          shapes: [
-            {
-              targetClass: topType,
-              property: [{ path: top, min_count: 1, bind: "targets" }],
-            },
-          ],
-        },
-      },
-    });
-  }
   return possibilities;
 }
 
@@ -1010,21 +930,19 @@ export async function guide(
       search_feedback:
         "After a lbb_search result set is useful or clearly wrong, write relevance labels with lbb_commit mode=search_feedback. Use grade 3 for ideal/good results, grade 1 for partially relevant results, and grade 0 for bad results. Include the original query, search_id when present, target identity, rank, score, and an optional split train/eval/unspecified. These labels are stored in __lbb_feedback/main and later exported as qrels-style training/eval data; they are not customer facts.",
       inspect:
-        "Use lbb_inspect for ontology, RDF/SHACL schema, stored rules, metadata, state/history/why, exact traversals, and this guide.",
+        "Use lbb_inspect for ontology, schema metadata, the published conformance report, metadata, state/history/why, exact traversals, and this guide.",
       ontology_decorations:
         "lbb_inspect action=ontology returns a decoration_status catalog: each ontology decoration is enforced (the engine acts on it — state_reducer, value_type, super_types, properties, supernode_policy; cardinality, which GET /v1/ontology/conformance audits as sh:maxCount; and inverse_name/symmetric, which SPARQL resolves as relation aliases — an inverse name is queryable directly (lowered to ^forward, no stored inverse triple) and a symmetric relation matches both directions), advisory (transitive, temporal_semantics, required), or reserved (stored but unwired — default_weight, resolvable, alias/embedding_fields). You can also always reverse any relation in SPARQL by flipping the triple pattern or using ^forward. Each relation_def also carries edge_count — the number of current edges of that relation in this branch's snapshot — so you can tell at a glance which declared relations are actually populated (edge_count 0 = declared but unused) without a separate summary call.",
       query:
-        'Use lbb_query for structured SPARQL-subset bodies, SPARQL text, SHACL shapes, inference previews, retrieval premises, and canned analysis. A mode=structured body is { patterns: [{ subject, predicate, object }], filters?, group_by?, group_keys?, aggregates?, having? }; a pattern `predicate` is a relation name and is case-insensitive. mode=structured GROUP BY is not limited to entity identity: group_keys can key on a typed scalar property ({ property: { var, field, as } }) or a calendar bucket of a datetime property ({ date_bucket: { var, field, granularity: month|day|…, as } }), with scalar keys returned per group under value_keys[as] — so per-category breakdowns (e.g. by area) and time series (e.g. commits per month) are single server-side queries over typed attributes, not 700 entity fetches bucketed by hand. These typed scalar attributes are set via entity_properties and read back flat under attributes on entity/list reads (there is no nested metadata.attributes blob); discover the queryable field names via lbb_inspect action=ontology (property_defs) or action=schema, and see the lbb_query body field for a copy-paste commits-per-area-per-month example. A FILTER entry has the exact shape { compare: { op: eq|ne|lt|le|gt|ge, left: <term>, right: <term> } } (also and/or/not), where a <term> is { var }, { property: { var, field } }, or { value: { str|i64|f64|bool|date_time|entity } } — e.g. filters: [{ compare: { op: "ge", left: { property: { var: "d", field: "amount" } }, right: { value: { f64: 1000000 } } } }]. In SPARQL text, relations are <https://littlebigbrain.com/r/NAME> (NAME lowercased; reverse with ^) and types <https://littlebigbrain.com/class/NAME> used as `?x a <…/class/NAME>` — the local name is always lowercase, and the tool auto-lowercases /r/, /class/, /p/ IRI local names (noting each rewrite) so a stray uppercase does not silently match nothing; entities are content-addressed, so match a named entity by `?e <http://www.w3.org/2000/01/rdf-schema#label> "Name"` rather than constructing its IRI. Off-graph, a stack also serves the native SPARQL 1.1 Protocol at /sparql for off-the-shelf SPARQL clients.',
+        "Use lbb_query for structured SPARQL-subset bodies, SPARQL text, and canned analysis. A mode=structured body is { patterns: [{ subject, predicate, object }], filters?, group_by?, group_keys?, aggregates?, having? }; a pattern `predicate` is a relation name and is case-insensitive. mode=structured GROUP BY is not limited to entity identity: group_keys can key on a typed scalar property or calendar bucket. In SPARQL text, relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME>. Each query pins one published watermark.",
       write:
         "Use lbb_commit for fact writes and search relevance feedback; omitted idempotency keys are content-derived so retries dedupe. Set typed scalar attributes via entity_properties once the field is registered (add it on a live graph with lbb_configure evolve_ontology add_property). For feedback, use mode=search_feedback rather than fact triplets.",
       configure:
-        "Use lbb_configure to define a new ontology, evolve an existing one in place (add_entity_type / add_relation / add_property / widen, rename, narrow/remove), publish a previewed RDF/SHACL schema bundle, or replace stored rules after previewing them with lbb_query mode=infer.",
-      inference:
-        "Rule body/head terms are { var } or { entity: { entity_type, name } } — a fixed entity lets a rule match or derive a constant value (e.g. a status). A not_exists combinator adds stratified negation for universal conditions. Roll-up example: rule 1 head { var: phase } HAS_INCOMPLETE_DELIVERABLE { var: d }, body phase HAS_DELIVERABLE d, not_exists [ d HAS_DELIVERY_STATUS { entity: DeliveryStatus/Complete } ]; rule 2 head phase HAS_ROLLUP_STATUS { entity: DeliveryStatus/Complete }, body phase HAS_DELIVERABLE any, not_exists [ phase HAS_INCOMPLETE_DELIVERABLE x ] — derives complete only when every deliverable is complete.",
+        "Use lbb_configure to define a new ontology, evolve an existing one in place, or atomically publish ontology/SHACL bundle metadata. Conformance validation runs durably after publication.",
     },
-    possibilities: buildPossibilities(relations, entityTypes),
+    possibilities: buildPossibilities(relations),
     how_to:
-      "Ground with lbb_inspect action=guide, retrieve with lbb_search, rate useful/partial/bad retrieval results with lbb_commit mode=search_feedback when you have a judgment, inspect exact entities/schema/rules with lbb_inspect, preview analysis or inference with lbb_query, then write graph facts with lbb_commit or configuration with lbb_configure only when intended.",
+      "Ground with lbb_inspect action=guide, retrieve with lbb_search, rate useful/partial/bad retrieval results when you have a judgment, inspect exact entities/schema with lbb_inspect, run analysis with lbb_query, then write graph facts with lbb_commit or configuration with lbb_configure only when intended.",
   };
 }
 
@@ -1092,8 +1010,6 @@ export async function analyze(
         lexical: true,
         bm25: true,
         vector: true,
-        bm25_source: "persisted",
-        vector_source: "persisted",
         consistency: "strong",
       },
       facets: [{ field }],
@@ -1194,145 +1110,6 @@ export function ontologyDefineBody(p: {
     }),
     format: "spec",
     merge_default: p.merge_default ?? false,
-  };
-}
-
-export function schemaSourceBody(source?: {
-  source: string;
-  format?: string;
-}): Record<string, unknown> | undefined {
-  if (source === undefined) return undefined;
-  return {
-    source: source.source,
-    format: source.format ?? "auto",
-  };
-}
-
-export function schemaPreviewBody(p: {
-  ontology?: { source: string; format?: string };
-  shapes?: { source: string; format?: string };
-  base_ontology_version?: number;
-  base_shapes_version?: number;
-  desired_mode?: string;
-}): Record<string, unknown> {
-  const ontology = schemaSourceBody(p.ontology);
-  const shapes = schemaSourceBody(p.shapes);
-  if (ontology === undefined && shapes === undefined) {
-    throw new Error("schema_preview requires an ontology or shapes source");
-  }
-  return {
-    ontology,
-    shapes,
-    base_ontology_version: p.base_ontology_version ?? null,
-    base_shapes_version: p.base_shapes_version ?? null,
-    desired_mode: p.desired_mode ?? "warn",
-  };
-}
-
-export function schemaPublishBody(p: {
-  preview_digest: string;
-  ontology?: { source: string; format?: string };
-  shapes: { source: string; format?: string };
-  desired_mode: string;
-  confirm_restrictive?: boolean;
-}): Record<string, unknown> {
-  return {
-    preview_digest: p.preview_digest,
-    ontology: schemaSourceBody(p.ontology),
-    shapes: schemaSourceBody(p.shapes),
-    desired_mode: p.desired_mode,
-    confirm_restrictive: p.confirm_restrictive ?? false,
-  };
-}
-
-export function choosePublishMode(
-  response: Record<string, unknown>,
-  requested: string,
-): "warn" | "reject" | undefined {
-  const modes = Array.isArray(response.publish_mode_allowed)
-    ? response.publish_mode_allowed
-    : [];
-  if (modes.includes(requested))
-    return requested === "reject" ? "reject" : "warn";
-  if (modes.includes("warn")) return "warn";
-  if (modes.includes("reject")) return "reject";
-  return undefined;
-}
-
-export function auditSummary(
-  audit: unknown,
-): Record<string, unknown> | undefined {
-  if (!audit || typeof audit !== "object") return undefined;
-  const a = audit as {
-    conforms?: unknown;
-    result_count?: unknown;
-    messages?: unknown;
-    results?: unknown;
-  };
-  return {
-    conforms: a.conforms,
-    result_count: a.result_count,
-    messages: a.messages,
-    sample_results: Array.isArray(a.results)
-      ? a.results.slice(0, 5)
-      : undefined,
-  };
-}
-
-export async function schemaPreview(
-  target: LbbClient,
-  p: {
-    graph?: string;
-    branch?: string;
-    ontology?: { source: string; format?: string };
-    shapes?: { source: string; format?: string };
-    base_ontology_version?: number;
-    base_shapes_version?: number;
-    desired_mode?: string;
-  },
-): Promise<Record<string, unknown>> {
-  const body = schemaPreviewBody(p);
-  const response = (await target.schema.preview(body as never)) as Record<
-    string,
-    unknown
-  >;
-  const desiredMode =
-    typeof response.desired_mode === "string"
-      ? response.desired_mode
-      : String(body.desired_mode);
-  const publishMode = choosePublishMode(response, desiredMode);
-  const suggestedPublish =
-    publishMode && body.shapes
-      ? {
-          tool: "lbb_configure",
-          args: {
-            action: "publish_schema",
-            graph: p.graph,
-            branch: p.branch,
-            preview_digest: response.preview_digest,
-            desired_mode: publishMode,
-            confirm_restrictive:
-              response.verdict === "restrictive" && publishMode === "warn"
-                ? true
-                : undefined,
-            ontology: body.ontology,
-            shapes: body.shapes,
-          },
-        }
-      : undefined;
-  return {
-    graph: response.graph,
-    verdict: response.verdict,
-    can_publish: response.can_publish,
-    publish_mode_allowed: response.publish_mode_allowed,
-    preview_digest: response.preview_digest,
-    desired_mode: response.desired_mode,
-    proposed_ontology_version: response.proposed_ontology_version,
-    proposed_shapes_version: response.proposed_shapes_version,
-    diff: response.diff,
-    audit: auditSummary(response.audit),
-    messages: response.messages,
-    suggested_publish_schema: suggestedPublish,
   };
 }
 

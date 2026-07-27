@@ -23,7 +23,6 @@ import {
   contentHashKey,
   decodeQueryCursor,
   effectiveRowLimit,
-  entityEdgeCapHint,
   enrichError,
   errorResult,
   guide,
@@ -37,8 +36,6 @@ import {
   rowPageFrom,
   rowPageNext,
   run,
-  schemaPreview,
-  schemaPublishBody,
   scoped,
   searchBody,
   searchFeedbackHint,
@@ -134,8 +131,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 lexical: true,
                 bm25: true,
                 vector: true,
-                bm25_source: "persisted",
-                vector_source: "persisted",
                 consistency: "strong",
                 profile: resolveProfile(profile),
               },
@@ -164,93 +159,16 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
   );
 
   server.registerTool(
-    "lbb_ask",
-    {
-      description:
-        "Ask a natural-language question about the graph and get a grounded answer with citations. The database snaps the question to its real vocabulary (never invented), retrieves against the pinned snapshot, and answers. `mode` is `resident_planner` when a small resident model synthesized the prose, or `grounding_only` when it returns the grounded evidence for your own model to finish. Prefer this over lbb_search when you want a direct, cited answer rather than a ranked list; set `execute: false` to get only the grounding — the real vocabulary the question maps to — without retrieval. The response `explain` block reports how much the database narrowed (vocabulary candidates the question snapped to, plus retrieved entity/assertion counts) and the per-stage latency (ground / retrieve / synth / total ms), so you can see the pipeline that produced the answer.",
-      inputSchema: {
-        question: z
-          .string()
-          .describe("The natural-language question to answer from the graph"),
-        top_k: z
-          .number()
-          .int()
-          .positive()
-          .max(25)
-          .optional()
-          .describe("Max citations to return (default 8)"),
-        execute: z
-          .boolean()
-          .optional()
-          .describe(
-            "Run retrieval and answer (default true); false returns only the grounding",
-          ),
-        as_of: z
-          .string()
-          .optional()
-          .describe(
-            "Valid-time cursor (RFC 3339): retrieval reflects facts true at this instant",
-          ),
-        as_of_commit_seq: z
-          .number()
-          .int()
-          .nonnegative()
-          .optional()
-          .describe(
-            "Snapshot pin: retrieval and citations reproduce the graph as of this commit sequence",
-          ),
-        detail: detailSchema,
-        ...graphScope,
-      },
-      annotations: READ_ONLY,
-    },
-    ({
-      question,
-      top_k,
-      execute,
-      as_of,
-      as_of_commit_seq,
-      detail,
-      graph,
-      branch,
-    }) =>
-      run(client, "lbb_ask", detail, () =>
-        scoped(client, graph, branch).ask({
-          question,
-          top_k,
-          execute,
-          ...(as_of !== undefined ? { as_of_valid_time: as_of } : {}),
-          ...(as_of_commit_seq !== undefined ? { as_of_commit_seq } : {}),
-        } as never),
-      ),
-  );
-
-  server.registerTool(
     "lbb_decode",
     {
       description:
-        "Name the relation between two entities. The database narrows the candidates to the relations its type signatures admit for the (source type, target type) pair; if the pair admits exactly one, the database answers alone (`mode: forced`, no model call). Otherwise a small model fine-tuned on this graph's own edges picks from the narrowed set (`mode: model_narrowed`), constrained to real vocabulary so it can only emit a relation that can exist. You can OMIT the types — pass just the names and the database recovers each type by resolving the name to a real entity (echoed in `resolved_source`/`resolved_target`). Use it to fill a missing edge label, verify a relationship, or assemble structured triples. Returns the `relation`, the admissible `candidates`, and `signature_forced`.",
+        "Name the relation between two entities from the admissible published vocabulary. Types may be omitted and resolved from entity names.",
       inputSchema: {
-        source_name: z.string().describe("Source entity display name"),
-        source_type: z
-          .string()
-          .optional()
-          .describe(
-            "Source entity type; omit to have the DB recover it from the name",
-          ),
-        target_name: z.string().describe("Target entity display name"),
-        target_type: z
-          .string()
-          .optional()
-          .describe(
-            "Target entity type; omit to have the DB recover it from the name",
-          ),
-        use_model_when_forced: z
-          .boolean()
-          .optional()
-          .describe(
-            "Call the model even when the type pair forces one relation (default false — a forced pair is answered by the DB alone)",
-          ),
+        source_name: z.string(),
+        source_type: z.string().optional(),
+        target_name: z.string(),
+        target_type: z.string().optional(),
+        use_model_when_forced: z.boolean().optional(),
         detail: detailSchema,
         ...graphScope,
       },
@@ -279,25 +197,16 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_ground",
     {
       description:
-        "Ground your terms to the graph's real vocabulary before you query or write, so you never guess a type, relation, or property name. Actions: `complete` — narrowed autocomplete: completes a prefix against the real vocabulary, optionally narrowed to the relations a (src_type, dst_type) pair actually admits (so you only propose relations that can exist); `resolve` — snap free text to the single nearest real vocabulary item by embedding/lexical similarity, never fabricating a name; `audit` — groundability report: signature sparsity, name semantics, sampled narrowing recall, and a narrow / narrow+finetune / lexical recommendation for this graph.",
+        "Ground terms to the graph's published vocabulary. complete autocompletes a prefix, resolve snaps free text to real vocabulary, and audit reports graph groundability.",
       inputSchema: {
-        action: z
-          .enum(["complete", "resolve", "audit"])
-          .describe(
-            "complete = narrowed vocabulary autocomplete; resolve = snap free text to the nearest real vocabulary; audit = groundability report",
-          ),
+        action: z.enum(["complete", "resolve", "audit"]),
         prefix: z
           .string()
           .optional()
           .describe(
             "[complete] Text prefix to complete against the real vocabulary",
           ),
-        text: z
-          .string()
-          .optional()
-          .describe(
-            "[resolve] Free text to snap to the nearest real vocabulary item",
-          ),
+        text: z.string().optional().describe("[resolve] Free text to resolve"),
         src_type: z
           .string()
           .optional()
@@ -322,22 +231,20 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             ]),
           )
           .optional()
-          .describe(
-            "[complete/resolve] Restrict to these vocabulary kinds (default: all)",
-          ),
+          .describe("Restrict to these vocabulary kinds (default: all)"),
         top_k: z
           .number()
           .int()
           .positive()
           .max(50)
           .optional()
-          .describe("[complete/resolve] Max results (default 8)"),
+          .describe("Max results (default 8)"),
         sample: z
           .number()
           .int()
           .positive()
           .optional()
-          .describe("[audit] Entities to sample for narrowing-recall"),
+          .describe("[audit] Entities sampled for narrowing recall"),
         detail: detailSchema,
         ...graphScope,
       },
@@ -366,7 +273,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
           } as never);
         }
         if (action === "audit") {
-          return target.groundability(sample != null ? { sample } : {});
+          return target.groundability(sample == null ? {} : { sample });
         }
         const context =
           src_type !== undefined || dst_type !== undefined
@@ -385,7 +292,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, ontology, ontology_conformance, schema, schema_preview, schema_audit, rules, ontology_search, metadata, entity, edges, state, history, transitions, why, traverse. entity returns one node's metadata, scalar attributes, current state, edges, history, and observations — its edge/history arrays are a display sample capped at the detail limit (counts holds the true totals), so on a high-degree node the response carries an `edge_sample` block with the capped totals and ready-to-run paged reads; follow those (or call edges/history directly, paged by row_limit/offset with direction/relation filters and an as_of/as_of_commit_seq pin) to read the full set — total_count tells you when to stop. transitions returns the ordered state-transition log of an entity's relation with dwell time at each value (cycle-time/process analysis). metadata includes temporal_coverage — check it before attempting as-of/daily views: as_of_valid_time_degenerate or single_commit_time means every point-in-time query returns the same snapshot. Use ontology_conformance to check the live data against the ontology's own capped-cardinality rules (derived SHACL sh:maxCount, whole-snapshot, never blocks a write) — distinct from schema_audit, which runs the separately-published SHACL shape bundle.",
+        "Read graph context and exact graph facts. Actions: guide, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why, traverse. schema reads active ontology/SHACL bundle metadata without running validation. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded edge neighborhood, history, and observations. Use traverse for bounded path expansion or lbb_query for precise SPARQL edge selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -393,138 +300,93 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
       const parsed = inspectInputSchema.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
-      return run(
-        client,
-        `lbb_inspect.${args.action}`,
-        args.detail,
-        () => {
-          const target = scoped(client, args.graph, args.branch);
-          switch (args.action) {
-            case "guide":
-              return guide(target);
-            case "ontology":
-              // Request per-relation edge counts so the listing flags which of the
-              // declared relations are actually populated (edge_count: 0 = unused).
-              return target.ontologyView({ counts: true });
-            case "ontology_conformance":
-              return target.ontologyConformance();
-            case "schema":
-              return target.schema.view();
-            case "schema_preview":
-              return schemaPreview(target, {
-                graph: args.graph,
-                branch: args.branch,
-                ontology: args.ontology,
-                shapes: args.shapes,
-                base_ontology_version: args.base_ontology_version,
-                base_shapes_version: args.base_shapes_version,
-                desired_mode: args.desired_mode,
-              });
-            case "schema_audit":
-              return target.schema.audit();
-            case "rules":
-              return target.graphRules();
-            case "ontology_search":
-              return target.ontologySearch({
-                query: args.query,
-                search: { concepts: true, terms: true, relations: true },
-                top_k: args.top_k ?? 10,
-                explain: false,
-              } as never);
-            case "metadata":
-              return target.metadata();
-            case "entity":
-              return target.entityDetail({
-                ...(args.entity_id
-                  ? { id: args.entity_id }
-                  : {
-                      type: requireString(args.entity_type, "entity_type"),
-                      name: requireString(args.name, "name"),
-                    }),
-                asOf: args.as_of,
-                asOfCommitSeq: args.as_of_commit_seq,
-              });
-            case "edges":
-              // Paged edge listing — the way to read every edge of a high-degree
-              // node, which `entity` hard-caps. Returns the unified list envelope;
-              // page by feeding next_cursor back as `cursor` until has_more=false.
-              return target.graphEdges({
-                id: args.entity_id,
-                type: args.entity_type,
+      return run(client, `lbb_inspect.${args.action}`, args.detail, () => {
+        const target = scoped(client, args.graph, args.branch);
+        switch (args.action) {
+          case "guide":
+            return guide(target);
+          case "ontology":
+            // Request per-relation edge counts so the listing flags which of the
+            // declared relations are actually populated (edge_count: 0 = unused).
+            return target.ontologyView({ counts: true });
+          case "ontology_conformance":
+            return target.ontologyConformance();
+          case "schema":
+            return target.schema.view();
+          case "ontology_search":
+            return target.ontologySearch({
+              query: args.query,
+              search: { concepts: true, terms: true, relations: true },
+              top_k: args.top_k ?? 10,
+              explain: false,
+            } as never);
+          case "metadata":
+            return target.metadata();
+          case "entity":
+            return target.entityDetail({
+              ...(args.entity_id
+                ? { id: args.entity_id }
+                : {
+                    type: requireString(args.entity_type, "entity_type"),
+                    name: requireString(args.name, "name"),
+                  }),
+              asOf: args.as_of,
+              asOfCommitSeq: args.as_of_commit_seq,
+            });
+          case "state":
+            return target.currentState({
+              entity: {
+                entity_type: args.entity_type,
                 name: args.name,
-                direction: args.direction,
-                relation: args.relation,
-                limit: args.row_limit,
-                cursor: args.cursor,
-                offset: args.offset,
-                asOf: args.as_of,
-                asOfCommitSeq: args.as_of_commit_seq,
-              });
-            case "state":
-              return target.currentState({
-                entity: {
-                  entity_type: args.entity_type,
-                  name: args.name,
-                },
-                relations: args.relation ? [args.relation] : null,
-                as_of_valid_time: args.as_of ?? null,
-                as_of_commit_seq: args.as_of_commit_seq ?? null,
-              } as never);
-            case "history":
-              return target.history({
-                source: {
-                  entity_type: args.entity_type,
-                  name: args.name,
-                },
-                relation: args.relation ?? null,
-              } as never);
-            case "why":
-              return target.why({
-                source: {
-                  entity_type: args.source_type,
-                  name: args.source_name,
-                },
-                relation: args.relation,
-                target: {
-                  entity_type: args.target_type,
-                  name: args.target_name,
-                },
-              } as never);
-            case "traverse":
-              return target.traverse({
-                start: {
-                  entity_type: args.entity_type,
-                  name: args.name,
-                },
-                relations: args.relations ?? null,
-                direction: args.direction ?? "both",
-                max_hops: args.max_hops ?? 2,
-                max_frontier_entities: 50,
-                max_paths: args.top_k ?? 25,
-              } as never);
-            case "transitions":
-              return target.transitions({
-                entity: {
-                  entity_type: args.entity_type,
-                  name: args.name,
-                },
-                relation: args.relation,
-                as_of_valid_time: args.as_of ?? null,
-                as_of_commit_seq: args.as_of_commit_seq ?? null,
-              } as never);
-          }
-        },
-        (data) =>
-          args.action === "entity"
-            ? entityEdgeCapHint(
-                data,
-                args.detail,
-                args.entity_id
-                  ? { entity_id: args.entity_id }
-                  : { entity_type: args.entity_type, name: args.name },
-              )
-            : {},
-      );
+              },
+              relations: args.relation ? [args.relation] : null,
+              as_of_valid_time: args.as_of ?? null,
+              as_of_commit_seq: args.as_of_commit_seq ?? null,
+            } as never);
+          case "history":
+            return target.history({
+              source: {
+                entity_type: args.entity_type,
+                name: args.name,
+              },
+              relation: args.relation ?? null,
+            } as never);
+          case "why":
+            return target.why({
+              source: {
+                entity_type: args.source_type,
+                name: args.source_name,
+              },
+              relation: args.relation,
+              target: {
+                entity_type: args.target_type,
+                name: args.target_name,
+              },
+            } as never);
+          case "traverse":
+            return target.traverse({
+              start: {
+                entity_type: args.entity_type,
+                name: args.name,
+              },
+              relations: args.relations ?? null,
+              direction: args.direction ?? "both",
+              max_hops: args.max_hops ?? 2,
+              max_frontier_entities: 50,
+              max_paths: args.top_k ?? 25,
+            } as never);
+          case "transitions":
+            return target.transitions({
+              entity: {
+                entity_type: args.entity_type,
+                name: args.name,
+              },
+              relation: args.relation,
+              as_of_valid_time: args.as_of ?? null,
+              as_of_commit_seq: args.as_of_commit_seq ?? null,
+            } as never);
+        }
+      });
     },
   );
 
@@ -532,7 +394,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), shacl, infer, retrieval_premises, analyze. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI (see the sparql/structured field hints, and lbb_inspect action=ontology for exact names). For structured/sparql row paging, MCP owns limit/offset via row_limit/cursor; a cursor reuses the original query/body and pins continuation pages to the original head commit. When a single page's rows are complete server-side (row_page.has_more false) but too large for one MCP result, the envelope reports `rows_shown` (fewer than row_page.returned), keeps `truncated: true`, and hands back a `next` cursor that pages the same result set at a smaller row_limit — so a large fully-returned result is never silently cut without a way to read the rest.",
+        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), analyze. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -751,53 +613,59 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
       }
       return run(client, `lbb_query.${args.mode}`, args.detail, async () => {
         const target = scoped(client, args.graph, args.branch);
-        switch (args.mode) {
-          case "shacl":
-            return target.shacl({
-              shapes: args.shapes ?? [],
-              mode: args.shacl_mode ?? "select",
-              include_derived: args.include_derived ?? false,
-              rules: args.rules ?? [],
-              as_of_valid_time: args.as_of ?? null,
-              top_k: args.top_k ?? 10,
-              explain: args.explain ?? false,
-            } as never);
-          case "infer":
-            return target.infer({
-              rules: args.rules ?? [],
-              max_rounds: args.max_rounds ?? null,
-              max_derived: args.max_derived ?? null,
-              max_solutions: args.max_solutions ?? null,
-              as_of_valid_time: args.as_of ?? null,
-              as_of_commit_seq: args.as_of_commit_seq ?? null,
-            } as never);
-          case "retrieval_premises":
-            return target.retrievalPremises({
-              anchor: {
-                entity_type: args.anchor_type,
-                name: args.anchor_name,
-              },
-              relation: args.relation,
-              model_id: "lbb-hash-lexical-v1",
-              target_kind: "entity",
-              calibration: { a: -1, b: 0 },
-              threshold: args.threshold ?? 0.5,
-              max_premises: args.max_premises ?? 50,
-              query: args.query,
-              query_top_k: args.query_top_k ?? 50,
-            } as never);
-          case "analyze":
-            return analyze(target, {
-              metric: args.metric,
-              chart: args.chart,
-              top_k: args.top_k,
-              query: args.query,
-              field: args.field,
-              sparql: args.sparql,
-            });
-        }
+        return analyze(target, {
+          metric: args.metric,
+          chart: args.chart,
+          top_k: args.top_k,
+          query: args.query,
+          field: args.field,
+          sparql: args.sparql,
+        });
       });
     },
+  );
+
+  server.registerTool(
+    "lbb_models",
+    {
+      description:
+        "Read model-training inputs or compare retrieval configurations over one pinned published snapshot. shadow_eval takes the API ShadowEvalRequest body; dataset actions return bounded training examples at an optional signal split.",
+      inputSchema: {
+        action: z.enum([
+          "shadow_eval",
+          "planner_dataset",
+          "planner_preference_dataset",
+          "suggest_dataset",
+          "extractor_dataset",
+        ]),
+        body: jsonObjectSchema.optional(),
+        limit: z.number().int().positive().optional(),
+        split_seq: z.number().int().nonnegative().optional(),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: READ_ONLY,
+    },
+    ({ action, body, limit, split_seq, detail, graph, branch }) =>
+      run(client, `lbb_models.${action}`, detail, () => {
+        const target = scoped(client, graph, branch);
+        switch (action) {
+          case "shadow_eval":
+            if (!body) throw new Error("shadow_eval requires body");
+            return target.shadowEval(body as never);
+          case "planner_dataset":
+            return target.plannerDataset({ limit, splitSeq: split_seq });
+          case "planner_preference_dataset":
+            return target.plannerPreferenceDataset({
+              limit,
+              splitSeq: split_seq,
+            });
+          case "suggest_dataset":
+            return target.suggestDataset({ limit, splitSeq: split_seq });
+          case "extractor_dataset":
+            return target.extractorDataset({ limit, splitSeq: split_seq });
+        }
+      }),
   );
 
   server.registerTool(
@@ -972,7 +840,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_configure",
     {
       description:
-        "Mutate stored graph configuration. Actions: define_ontology (create a new graph ontology), evolve_ontology (evolve an existing graph's ontology in place by name — add_entity_type / add_relation / add_property (a typed scalar field so entity_properties can write it) / widen_relation, rename and set-inverse/cardinality, and data-gated narrow/remove; bumps the ontology version, preserves every record, no migration), publish_schema (activate a previewed RDF/SHACL shape bundle), and define_rules (replace the branch's stored inference rules — body/head terms may be variables or fixed entities, and not_exists combinators add stratified negation for universal conditions).",
+        "Mutate stored graph configuration. Actions: define_ontology, evolve_ontology, and publish_schema. Schema publication atomically activates metadata and enqueues durable conformance; it never validates the whole graph in the request.",
       inputSchema: configureWireSchema,
       annotations: MUTATING,
     },
@@ -1000,47 +868,19 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             allow_data_conflicts: args.allow_data_conflicts ?? false,
           } as never);
         }
-        if (args.action === "publish_schema") {
-          return scoped(client, args.graph, args.branch).schema.publish(
-            schemaPublishBody({
-              preview_digest: args.preview_digest,
-              ontology: args.ontology,
-              shapes: args.shapes,
-              desired_mode: args.desired_mode,
-              confirm_restrictive: args.confirm_restrictive,
-            }) as never,
-          );
-        }
-        if (args.rules.length === 0 && args.confirm_empty !== true) {
+        if (args.ontology === undefined && args.shapes === undefined) {
           throw new Error(
-            "define_rules with an empty rules array requires confirm_empty=true",
+            "publish_schema requires an ontology or shapes source",
           );
         }
-        return scoped(client, args.graph, args.branch).defineRules({
-          rules: args.rules,
+        return scoped(client, args.graph, args.branch).schema.publish({
+          ontology: args.ontology,
+          shapes: args.shapes,
+          desired_mode: args.desired_mode,
+          confirm_restrictive: args.confirm_restrictive,
         } as never);
       });
     },
-  );
-
-  server.registerTool(
-    "lbb_index",
-    {
-      description:
-        "Build or refresh persisted BM25, vector, and adjacency indexes so recently committed facts become searchable.",
-      inputSchema: {
-        background: z
-          .boolean()
-          .optional()
-          .describe("Run detached and poll metadata for completion"),
-        ...graphScope,
-      },
-      annotations: MUTATING,
-    },
-    ({ background, graph, branch }) =>
-      run(client, "lbb_index", "standard", () =>
-        scoped(client, graph, branch).indexRun({ background }),
-      ),
   );
 
   server.registerTool(
