@@ -926,11 +926,11 @@ export async function guide(
     relations,
     capability: {
       search:
-        "Use lbb_search for natural-language retrieval, optional multi-query fusion, and optional path following.",
+        "Use lbb_search for natural-language retrieval and optional multi-query fusion. Semantic graph search may include internally scored paths in its result set.",
       search_feedback:
         "After a lbb_search result set is useful or clearly wrong, write relevance labels with lbb_commit mode=search_feedback. Use grade 3 for ideal/good results, grade 1 for partially relevant results, and grade 0 for bad results. Include the original query, search_id when present, target identity, rank, score, and an optional split train/eval/unspecified. These labels are stored in __lbb_feedback/main and later exported as qrels-style training/eval data; they are not customer facts.",
       inspect:
-        "Use lbb_inspect for ontology, schema metadata, the published conformance report, metadata, state/history/why, exact traversals, and this guide.",
+        "Use lbb_inspect for ontology, schema metadata, the published conformance report, metadata, state/history/why, and this guide. Use lbb_query with SPARQL property paths for exact path queries.",
       ontology_decorations:
         "lbb_inspect action=ontology returns a decoration_status catalog: each ontology decoration is enforced (the engine acts on it — state_reducer, value_type, super_types, properties, supernode_policy; cardinality, which GET /v1/ontology/conformance audits as sh:maxCount; and inverse_name/symmetric, which SPARQL resolves as relation aliases — an inverse name is queryable directly (lowered to ^forward, no stored inverse triple) and a symmetric relation matches both directions), advisory (transitive, temporal_semantics, required), or reserved (stored but unwired — default_weight, resolvable, alias/embedding_fields). You can also always reverse any relation in SPARQL by flipping the triple pattern or using ^forward. Each relation_def also carries edge_count — the number of current edges of that relation in this branch's snapshot — so you can tell at a glance which declared relations are actually populated (edge_count 0 = declared but unused) without a separate summary call.",
       query:
