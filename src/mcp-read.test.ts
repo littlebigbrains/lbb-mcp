@@ -119,13 +119,6 @@ test("lbb_search routes single, multi, and path-following retrieval modes", asyn
   assert.equal(multiBody.subqueries.length, 2);
   assert.equal(multiBody.explain, false);
 
-  await client.callTool({
-    name: "lbb_search",
-    arguments: { query: "identity", follow_paths: true, max_hops: 3 },
-  });
-  assert.match(calls[3].input, /\/v1\/graph\/semantic-traverse\?/);
-  assert.equal(JSON.parse(calls[3].init.body ?? "{}").max_hops, 3);
-
   // The bitemporal cursor rides through as body fields (valid-time arg is
   // spelled `as_of` at the tool surface, `as_of_valid_time` on the wire).
   await client.callTool({
@@ -136,13 +129,13 @@ test("lbb_search routes single, multi, and path-following retrieval modes", asyn
       as_of: "2026-01-15T00:00:00Z",
     },
   });
-  const pinnedBody = JSON.parse(calls[4].init.body ?? "{}");
+  const pinnedBody = JSON.parse(calls[3].init.body ?? "{}");
   assert.equal(pinnedBody.as_of_commit_seq, 7);
   assert.equal(pinnedBody.as_of_valid_time, "2026-01-15T00:00:00Z");
   await client.close();
 });
 
-test("lbb_inspect consolidates guide, ontology, metadata, state, history, why, and traverse", async () => {
+test("lbb_inspect consolidates guide, ontology, metadata, state, history, and why", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
@@ -221,15 +214,6 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, why, a
   await client.callTool({
     name: "lbb_inspect",
     arguments: {
-      action: "traverse",
-      entity_type: "Person",
-      name: "Ada",
-      direction: "out",
-    },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
       action: "transitions",
       entity_type: "Person",
       name: "Ada",
@@ -247,8 +231,7 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, why, a
   assert.match(calls[5].input, /\/v1\/query\/state\?/);
   assert.match(calls[6].input, /\/v1\/query\/history\?/);
   assert.match(calls[7].input, /\/v1\/query\/why\?/);
-  assert.match(calls[8].input, /\/v1\/graph\/traverse\?/);
-  assert.match(calls[9].input, /\/v1\/query\/transitions\?/);
+  assert.match(calls[8].input, /\/v1\/query\/transitions\?/);
   await client.close();
 });
 

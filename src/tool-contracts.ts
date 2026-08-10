@@ -430,18 +430,6 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
     .strict(),
   z
     .object({
-      action: z.literal("traverse"),
-      entity_type: z.string(),
-      name: z.string(),
-      relations: z.array(z.string()).optional(),
-      direction: z.enum(["out", "in", "both"]).optional(),
-      max_hops: z.number().int().positive().max(6).optional(),
-      top_k: z.number().int().positive().optional(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal("transitions"),
       entity_type: z.string(),
       name: z.string(),

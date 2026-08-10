@@ -32,7 +32,6 @@ import {
   queryCommitPin,
   queryEnvelope,
   requireString,
-  resolveProfile,
   rowPageFrom,
   rowPageNext,
   run,
@@ -48,7 +47,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_search",
     {
       description:
-        "Natural-language retrieval over Little Big Brain. Use `query` for one phrasing, `queries` for reciprocal-rank fusion across phrasings, and `follow_paths: true` when you want bounded graph paths from text-resolved seed entities. When you can judge returned results, call lbb_commit mode=search_feedback with good=3, partial=1, bad=0 so Little Big Brain can build customer-specific qrels for embedding training.",
+        "Natural-language retrieval over Little Big Brain. Use `query` for one phrasing or `queries` for reciprocal-rank fusion across phrasings. Semantic graph search can return internally scored paths alongside entity and assertion results. When you can judge returned results, call lbb_commit mode=search_feedback with good=3, partial=1, bad=0 so Little Big Brain can build customer-specific qrels for embedding training.",
       inputSchema: {
         query: z.string().optional().describe("Natural-language query"),
         queries: z
@@ -57,10 +56,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
           .optional()
           .describe("Multiple phrasings to fuse"),
         mode: z.enum(["hybrid", "bm25", "vector", "lexical"]).optional(),
-        follow_paths: z.boolean().optional(),
         top_k: z.number().int().positive().optional(),
-        max_hops: z.number().int().positive().max(6).optional(),
-        direction: z.enum(["out", "in", "both"]).optional(),
         profile: z
           .enum(["ndcg_v1", "graph_aware_v1", "baseline", "scored_atom_v1"])
           .optional(),
@@ -87,10 +83,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
       query,
       queries,
       mode,
-      follow_paths,
       top_k,
-      max_hops,
-      direction,
       profile,
       as_of,
       as_of_commit_seq,
@@ -123,24 +116,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             } as never);
           }
           const q = requireString(query, "query");
-          if (follow_paths) {
-            return target.semanticTraverse({
-              query: q,
-              seed_top_k: Math.min(top_k ?? 3, 10),
-              search: {
-                lexical: true,
-                bm25: true,
-                vector: true,
-                consistency: "strong",
-                profile: resolveProfile(profile),
-              },
-              direction: direction ?? "both",
-              max_hops: max_hops ?? 2,
-              max_frontier_entities: 50,
-              max_paths: top_k ?? 25,
-              explain: false,
-            } as never);
-          }
           return target.graphSearch(
             searchBody({
               query: q,
@@ -292,7 +267,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why, traverse. schema reads active ontology/SHACL bundle metadata without running validation. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded edge neighborhood, history, and observations. Use traverse for bounded path expansion or lbb_query for precise SPARQL edge selection.",
+        "Read graph context and exact graph facts. Actions: guide, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why. schema reads active ontology/SHACL bundle metadata without running validation. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded Base-backed edge neighborhood, history, and observations. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -362,18 +337,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 entity_type: args.target_type,
                 name: args.target_name,
               },
-            } as never);
-          case "traverse":
-            return target.traverse({
-              start: {
-                entity_type: args.entity_type,
-                name: args.name,
-              },
-              relations: args.relations ?? null,
-              direction: args.direction ?? "both",
-              max_hops: args.max_hops ?? 2,
-              max_frontier_entities: 50,
-              max_paths: args.top_k ?? 25,
             } as never);
           case "transitions":
             return target.transitions({
