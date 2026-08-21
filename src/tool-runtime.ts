@@ -659,95 +659,6 @@ export async function run(
   }
 }
 
-/**
- * Point-of-use feedback affordance attached to every `lbb_search` result: an
- * agent looking at results it can judge gets a ready-to-run
- * `lbb_commit mode=search_feedback` template (the standout "guide ships runnable
- * possibilities" pattern, applied to the moment of judgment). The `search_id` is
- * pre-filled from the response when present so the label set ties back to this
- * exact ranked run.
- */
-export function searchFeedbackHint(
-  data: unknown,
-  ctx: { query?: string; queries?: string[]; graph?: string; branch?: string },
-): Record<string, unknown> {
-  const searchId =
-    data &&
-    typeof data === "object" &&
-    typeof (data as { search_id?: unknown }).search_id === "string"
-      ? (data as { search_id: string }).search_id
-      : undefined;
-  return {
-    how: "If you can judge these results, rate them with lbb_commit mode=search_feedback. Little Big Brain stores the labels as customer-specific qrels (in __lbb_feedback) and exports them as training/eval data for embedding fine-tuning — they improve retrieval, and are kept separate from customer facts. Skip it when you have no basis to judge.",
-    grades: { ideal_or_good: 3, partially_relevant: 1, bad: 0 },
-    example: {
-      tool: "lbb_commit",
-      args: {
-        mode: "search_feedback",
-        ...(ctx.graph !== undefined ? { graph: ctx.graph } : {}),
-        ...(ctx.branch !== undefined ? { branch: ctx.branch } : {}),
-        search_feedback: {
-          query: ctx.query ?? ctx.queries?.[0] ?? "<the query you ran>",
-          ...(searchId !== undefined ? { search_id: searchId } : {}),
-          labels: [
-            {
-              target: {
-                kind: "entity",
-                entity: { entity_type: "<type>", name: "<name>" },
-              },
-              rank: 1,
-              score: 0.0,
-              grade: 3,
-            },
-          ],
-          split: "unspecified",
-        },
-      },
-    },
-  };
-}
-
-export function resolveProfile(profile?: string): string | undefined {
-  switch (profile) {
-    case "ndcg_v1":
-    case "graph_aware_v1":
-    case "scored_atom_v1":
-    case "baseline":
-      return profile;
-    default:
-      return undefined;
-  }
-}
-
-export function searchBody(p: {
-  query: string;
-  mode?: string;
-  top_k?: number;
-  profile?: string;
-  as_of?: string;
-  as_of_commit_seq?: number;
-}): Record<string, unknown> {
-  const mode = p.mode ?? "hybrid";
-  return {
-    query: p.query,
-    targets: ["concepts", "entities", "assertions", "paths", "observations"],
-    search: {
-      lexical: mode === "hybrid" || mode === "lexical",
-      bm25: mode === "hybrid" || mode === "bm25",
-      vector: mode === "hybrid" || mode === "vector",
-      consistency: "strong",
-      profile: resolveProfile(p.profile),
-    },
-    max_hops: 2,
-    top_k: p.top_k ?? 10,
-    ...(p.as_of !== undefined ? { as_of_valid_time: p.as_of } : {}),
-    ...(p.as_of_commit_seq !== undefined
-      ? { as_of_commit_seq: p.as_of_commit_seq }
-      : {}),
-    explain: false,
-  };
-}
-
 export function vegaChart(
   kind: "bar" | "pie",
   title: string,
@@ -925,24 +836,22 @@ export async function guide(
     entity_types: entityTypes,
     relations,
     capability: {
-      search:
-        "Use lbb_search for natural-language retrieval and optional multi-query fusion. Semantic graph search may include internally scored paths in its result set.",
       search_feedback:
-        "After a lbb_search result set is useful or clearly wrong, write relevance labels with lbb_commit mode=search_feedback. Use grade 3 for ideal/good results, grade 1 for partially relevant results, and grade 0 for bad results. Include the original query, search_id when present, target identity, rank, score, and an optional split train/eval/unspecified. These labels are stored in __lbb_feedback/main and later exported as qrels-style training/eval data; they are not customer facts.",
+        "When a result set is useful or clearly wrong, write relevance labels with lbb_commit mode=search_feedback. Use grade 3 for ideal/good results, grade 1 for partially relevant results, and grade 0 for bad results. Include the original query, search_id when present, target identity, rank, score, and an optional split train/eval/unspecified. These labels are stored in __lbb_feedback/main and later exported as qrels-style training/eval data; they are not customer facts.",
       inspect:
         "Use lbb_inspect for ontology, schema metadata, the published conformance report, metadata, state/history/why, and this guide. Use lbb_query with SPARQL property paths for exact path queries.",
       ontology_decorations:
         "lbb_inspect action=ontology returns a decoration_status catalog: each ontology decoration is enforced (the engine acts on it — state_reducer, value_type, super_types, properties, supernode_policy; cardinality, which GET /v1/ontology/conformance audits as sh:maxCount; and inverse_name/symmetric, which SPARQL resolves as relation aliases — an inverse name is queryable directly (lowered to ^forward, no stored inverse triple) and a symmetric relation matches both directions), advisory (transitive, temporal_semantics, required), or reserved (stored but unwired — default_weight, resolvable, alias/embedding_fields). You can also always reverse any relation in SPARQL by flipping the triple pattern or using ^forward. Each relation_def also carries edge_count — the number of current edges of that relation in this branch's snapshot — so you can tell at a glance which declared relations are actually populated (edge_count 0 = declared but unused) without a separate summary call.",
       query:
-        "Use lbb_query for structured SPARQL-subset bodies, SPARQL text, and canned analysis. A mode=structured body is { patterns: [{ subject, predicate, object }], filters?, group_by?, group_keys?, aggregates?, having? }; a pattern `predicate` is a relation name and is case-insensitive. mode=structured GROUP BY is not limited to entity identity: group_keys can key on a typed scalar property or calendar bucket. In SPARQL text, relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME>. Each query pins one published watermark.",
+        "Use lbb_query for structured SPARQL-subset bodies, SPARQL text, and canned analysis. SPARQL is the only query surface. A mode=structured body is { patterns: [{ subject, predicate, object }], filters?, group_by?, group_keys?, aggregates?, having? }; a pattern `predicate` is a relation name and is case-insensitive. mode=structured GROUP BY is not limited to entity identity: group_keys can key on a typed scalar property or calendar bucket. In SPARQL text, relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME>. Each query pins one published watermark.",
       write:
-        "Use lbb_commit for fact writes and search relevance feedback; omitted idempotency keys are content-derived so retries dedupe. Set typed scalar attributes via entity_properties once the field is registered (add it on a live graph with lbb_configure evolve_ontology add_property). For feedback, use mode=search_feedback rather than fact triplets.",
+        "Use lbb_commit for fact writes and relevance feedback; omitted idempotency keys are content-derived so retries dedupe. Set typed scalar attributes via entity_properties once the field is registered (add it on a live graph with lbb_configure evolve_ontology add_property). For feedback, use mode=search_feedback rather than fact triplets.",
       configure:
         "Use lbb_configure to define a new ontology, evolve an existing one in place, or atomically publish ontology/SHACL bundle metadata. Conformance validation runs durably after publication.",
     },
     possibilities: buildPossibilities(relations),
     how_to:
-      "Ground with lbb_inspect action=guide, retrieve with lbb_search, rate useful/partial/bad retrieval results when you have a judgment, inspect exact entities/schema with lbb_inspect, run analysis with lbb_query, then write graph facts with lbb_commit or configuration with lbb_configure only when intended.",
+      "Ground with lbb_inspect action=guide, query with lbb_query (structured bodies or SPARQL text), rate useful/partial/bad result sets when you have a judgment, inspect exact entities/schema with lbb_inspect, then write graph facts with lbb_commit or configuration with lbb_configure only when intended.",
   };
 }
 
@@ -1001,33 +910,6 @@ export async function analyze(
         { label: "edge events", value: s.edge_event_count ?? 0 },
       ];
     }
-  } else if (metric === "facets") {
-    const field = requireString(p.field, "field");
-    const res = (await scopedClient.graphSearch({
-      query: p.query ?? "",
-      targets: ["entities", "assertions", "observations"],
-      search: {
-        lexical: true,
-        bm25: true,
-        vector: true,
-        consistency: "strong",
-      },
-      facets: [{ field }],
-      max_hops: 1,
-      top_k: 50,
-      explain: false,
-    } as never)) as {
-      facets?: { field: string; buckets: { value: string; count: number }[] }[];
-    };
-    const facet =
-      (res.facets ?? []).find((f) => f.field === field) ??
-      (res.facets ?? [])[0];
-    title = `${p.query ? `"${p.query}"` : "All"} by ${field}`;
-    categoryTitle = field;
-    points = (facet?.buckets ?? []).map((b) => ({
-      label: b.value,
-      value: b.count,
-    }));
   } else if (metric === "sparql") {
     const body = requireObject(p.sparql, "sparql");
     const res = (await scopedClient.sparql(body as never)) as {
@@ -1060,7 +942,7 @@ export async function analyze(
     }));
   } else {
     throw new Error(
-      "metric must be one of entity_types, relations, overview, facets, sparql",
+      "metric must be one of entity_types, relations, overview, sparql",
     );
   }
 

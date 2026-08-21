@@ -58,11 +58,8 @@ missing.
 
 | Tool | Use it for |
 | --- | --- |
-| `lbb_search` | hybrid retrieval, multi-query fusion, and semantic graph results |
-| `lbb_decode` | constrained relation decoding |
-| `lbb_ground` | vocabulary completion and resolution |
 | `lbb_inspect` | ontology, schema, entity, state, history, and provenance |
-| `lbb_query` | SPARQL and structured analytics |
+| `lbb_query` | SPARQL text, structured SPARQL bodies, and canned analysis |
 | `lbb_commit` | facts, properties, and embeddings |
 | `lbb_observe` | conversation episodes plus reviewed extraction |
 | `lbb_branch` | isolation branches and validated merge |

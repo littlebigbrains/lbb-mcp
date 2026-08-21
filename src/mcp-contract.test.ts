@@ -20,29 +20,20 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_branch",
     "lbb_commit",
     "lbb_configure",
-    "lbb_decode",
-    "lbb_ground",
     "lbb_inspect",
     "lbb_models",
     "lbb_observe",
     "lbb_query",
-    "lbb_search",
   ]);
 
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-  assert.equal(byName.lbb_search.annotations?.readOnlyHint, true);
-  assert.equal(byName.lbb_decode.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_models.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_inspect.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_query.annotations?.readOnlyHint, true);
-  // Published-vocabulary completion is read-only.
-  assert.equal(byName.lbb_ground.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
   assert.equal(byName.lbb_configure.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_configure.annotations?.idempotentHint, undefined);
-  assert.match(byName.lbb_search.description ?? "", /mode=search_feedback/);
-  assert.match(byName.lbb_search.description ?? "", /good=3, partial=1, bad=0/);
   assert.match(
     byName.lbb_commit.description ?? "",
     /Feedback grades: 3=ideal\/good, 1=partial, 0=bad/,
@@ -90,60 +81,27 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "dcd5174167e721ccd408d18fd8206f332b1a3aa4359c274e321e106a0124f74f",
+    "c05bf8cbbacdbe8510f9f37bb8e3c01f9e6036823c762e366cc7bf2f95af00f9",
   );
   await client.close();
 });
 
-test("lbb_ground routes completion, resolution, and groundability", async () => {
+test("the retired retrieval tools are no longer registered", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
-    const url = String(input);
-    if (url.includes("/v1/search/suggest")) {
-      return ok({
-        suggestions: [
-          {
-            text: "TOUCHES",
-            kind: "relation",
-            score: 1,
-            signature_forced: true,
-          },
-        ],
-      });
-    }
     return ok({});
   };
   const client = await connect(fetch);
 
-  // lbb_ground action=complete -> POST /v1/search/suggest, narrowing context passed.
-  await client.callTool({
-    name: "lbb_ground",
-    arguments: {
-      action: "complete",
-      prefix: "tou",
-      src_type: "Commit",
-      dst_type: "Component",
-    },
-  });
-  assert.match(calls.at(-1)!.input, /\/v1\/search\/suggest\?/);
-  const suggestBody = JSON.parse(calls.at(-1)!.init.body ?? "{}");
-  assert.equal(suggestBody.prefix, "tou");
-  assert.equal(suggestBody.context.src_type, "Commit");
-  assert.equal(suggestBody.context.dst_type, "Component");
-
-  await client.callTool({
-    name: "lbb_ground",
-    arguments: { action: "resolve", text: "touches" },
-  });
-  assert.match(calls.at(-1)!.input, /\/v1\/search\/resolve-term\?/);
-
-  await client.callTool({
-    name: "lbb_ground",
-    arguments: { action: "audit", sample: 25 },
-  });
-  assert.match(calls.at(-1)!.input, /\/v1\/graph\/groundability\?/);
-  assert.match(calls.at(-1)!.input, /sample=25/);
+  const { tools } = await client.listTools();
+  const registered = new Set(tools.map((tool) => tool.name));
+  for (const name of ["lbb_search", "lbb_ground", "lbb_decode"]) {
+    assert.equal(registered.has(name), false, `${name} must not be registered`);
+    const result = await client.callTool({ name, arguments: {} });
+    assert.equal(result.isError, true, `${name} must not be callable`);
+  }
+  assert.deepEqual(calls, [], "a retired tool must issue no HTTP request");
 
   await client.close();
 });

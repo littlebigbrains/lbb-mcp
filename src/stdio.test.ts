@@ -5,7 +5,7 @@ import { unconfiguredClient } from "./stdio.js";
 test("unconfigured client throws the Connect-page help on any method access", () => {
   const client = unconfiguredClient() as unknown as Record<string, unknown>;
   assert.throws(
-    () => client.graphSearch,
+    () => client.sparqlText,
     /LBB_BASE_URL is required.*Connect page/,
   );
 });
