@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { type FetchLike } from "@littlebigbrain/client";
 import { connect, ok, payload, type Call } from "./test-support.js";
 
-test("lbb_decode and lbb_models preserve published-root APIs", async () => {
+test("lbb_models preserves published-root APIs", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
@@ -11,14 +11,6 @@ test("lbb_decode and lbb_models preserve published-root APIs", async () => {
   };
   const client = await connect(fetch);
 
-  await client.callTool({
-    name: "lbb_decode",
-    arguments: {
-      source_name: "auth",
-      target_name: "database",
-      branch: "draft",
-    },
-  });
   await client.callTool({
     name: "lbb_models",
     arguments: {
@@ -36,102 +28,15 @@ test("lbb_decode and lbb_models preserve published-root APIs", async () => {
   });
   await client.callTool({
     name: "lbb_inspect",
-    arguments: { action: "schema" },
+    arguments: { action: "schema", branch: "draft" },
   });
 
-  assert.match(calls[0].input, /\/v1\/decode\?/);
-  assert.match(calls[0].input, /branch=draft/);
-  assert.match(calls[1].input, /\/v1\/models\/shadow-eval\?/);
-  assert.match(calls[2].input, /\/v1\/models\/planner-dataset\?/);
-  assert.match(calls[2].input, /limit=10/);
-  assert.match(calls[2].input, /split_seq=7/);
-  assert.match(calls[3].input, /\/v1\/schema\?/);
-  await client.close();
-});
-
-test("lbb_search routes single, multi, and path-following retrieval modes", async () => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({
-      search_id: "srch_1",
-      assertions: Array.from({ length: 8 }, (_, index) => ({
-        id: `a${index}`,
-        evidence: "x".repeat(350),
-      })),
-    });
-  };
-  const client = await connect(fetch);
-
-  const search = await client.callTool({
-    name: "lbb_search",
-    arguments: { query: "identity", top_k: 3 },
-  });
-  assert.match(calls[0].input, /\/v1\/graph\/search\?/);
-  assert.match(calls[0].input, /graph=g/);
-  assert.equal(JSON.parse(calls[0].init.body ?? "{}").top_k, 3);
-  const compact = payload(search);
-  assert.equal(
-    (compact.data as { assertions: unknown[] }).assertions.length,
-    5,
-  );
-  assert.equal(compact.counts?.assertions, 8);
-  assert.equal(compact.truncated, true);
-  assert.equal(compact.next?.detail, "standard");
-  // Point-of-use feedback affordance: a ready-to-run lbb_commit template with
-  // the grade legend and the search_id pre-filled from this run.
-  const feedback = (
-    compact as unknown as {
-      feedback?: {
-        grades?: Record<string, number>;
-        example?: {
-          tool?: string;
-          args?: {
-            mode?: string;
-            search_feedback?: { search_id?: string; query?: string };
-          };
-        };
-      };
-    }
-  ).feedback;
-  assert.ok(feedback, "lbb_search result carries a feedback affordance");
-  assert.equal(feedback.grades?.ideal_or_good, 3);
-  assert.equal(feedback.example?.tool, "lbb_commit");
-  assert.equal(feedback.example?.args?.mode, "search_feedback");
-  assert.equal(feedback.example?.args?.search_feedback?.search_id, "srch_1");
-  assert.equal(feedback.example?.args?.search_feedback?.query, "identity");
-
-  const full = await client.callTool({
-    name: "lbb_search",
-    arguments: { query: "identity", detail: "full" },
-  });
-  assert.equal(
-    (payload(full).data as { assertions: unknown[] }).assertions.length,
-    8,
-  );
-
-  await client.callTool({
-    name: "lbb_search",
-    arguments: { queries: ["identity", "login"], top_k: 4 },
-  });
-  assert.match(calls[2].input, /\/v1\/search\/multi\?/);
-  const multiBody = JSON.parse(calls[2].init.body ?? "{}");
-  assert.equal(multiBody.subqueries.length, 2);
-  assert.equal(multiBody.explain, false);
-
-  // The bitemporal cursor rides through as body fields (valid-time arg is
-  // spelled `as_of` at the tool surface, `as_of_valid_time` on the wire).
-  await client.callTool({
-    name: "lbb_search",
-    arguments: {
-      query: "identity",
-      as_of_commit_seq: 7,
-      as_of: "2026-01-15T00:00:00Z",
-    },
-  });
-  const pinnedBody = JSON.parse(calls[3].init.body ?? "{}");
-  assert.equal(pinnedBody.as_of_commit_seq, 7);
-  assert.equal(pinnedBody.as_of_valid_time, "2026-01-15T00:00:00Z");
+  assert.match(calls[0].input, /\/v1\/models\/shadow-eval\?/);
+  assert.match(calls[1].input, /\/v1\/models\/planner-dataset\?/);
+  assert.match(calls[1].input, /limit=10/);
+  assert.match(calls[1].input, /split_seq=7/);
+  assert.match(calls[2].input, /\/v1\/schema\?/);
+  assert.match(calls[2].input, /branch=draft/);
   await client.close();
 });
 
@@ -169,7 +74,7 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, and wh
     guideBody.capability.search_feedback ?? "",
     /__lbb_feedback\/main/,
   );
-  assert.match(guideBody.how_to, /rate useful\/partial\/bad retrieval results/);
+  assert.match(guideBody.how_to, /rate useful\/partial\/bad result sets/);
 
   await client.callTool({
     name: "lbb_inspect",
@@ -264,13 +169,6 @@ test("lbb_query routes structured, SPARQL text, and analysis modes", async () =>
     name: "lbb_query",
     arguments: { mode: "structured", body: { patterns: [] } },
   });
-  await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "structured",
-      body: { patterns: [], combinators: [{ optional: [] }] },
-    },
-  });
   const sparql = await client.callTool({
     name: "lbb_query",
     arguments: { mode: "sparql", query: "SELECT * WHERE { ?s ?p ?o }" },
@@ -284,16 +182,13 @@ test("lbb_query routes structured, SPARQL text, and analysis modes", async () =>
   assert.match(calls[1].input, /\/v1\/query\/sparql\?/);
   assert.equal(JSON.parse(calls[1].init.body ?? "{}").as_of_commit_seq, 7);
   assert.match(calls[2].input, /\/v1\/graph\/metadata\?/);
-  assert.match(calls[3].input, /\/v1\/query\/analytics\?/);
+  assert.match(calls[3].input, /\/v1\/query\/sparql-text\?/);
   assert.equal(JSON.parse(calls[3].init.body ?? "{}").as_of_commit_seq, 7);
-  assert.match(calls[4].input, /\/v1\/graph\/metadata\?/);
-  assert.match(calls[5].input, /\/v1\/query\/sparql-text\?/);
-  assert.equal(JSON.parse(calls[5].init.body ?? "{}").as_of_commit_seq, 7);
   assert.deepEqual(
     (payload(sparql).data as { head: { vars: string[] } }).head.vars,
     ["s"],
   );
-  assert.match(calls[6].input, /\/v1\/graph\/summary\?/);
+  assert.match(calls[4].input, /\/v1\/graph\/summary\?/);
   await client.close();
 });
 
@@ -926,8 +821,10 @@ test("lbb_query equality-HAVING with row_limit:1 reads the match count off row_p
   await client.close();
 });
 
-test("lbb_query rejects HAVING combined with combinators instead of dropping it", async () => {
-  const fetch: FetchLike = async (input) => {
+test("lbb_query rejects a combinators body now that the analytics route is gone", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
     if (input.includes("/v1/graph/metadata"))
       return ok({ snapshot: { commit_seq: 1 } });
     return ok({});
@@ -940,14 +837,18 @@ test("lbb_query rejects HAVING combined with combinators instead of dropping it"
       body: {
         patterns: [],
         combinators: [{ optional: [] }],
-        having: [{ left: { var: "n" }, op: "gt", right: { i64: 1 } }],
       },
     },
   });
   assert.equal(result.isError, true);
   assert.match(
     (result.content as { type: string; text: string }[])[0].text,
-    /HAVING is not evaluated alongside/,
+    /`combinators`.*no longer accepted.*mode=sparql/s,
+  );
+  assert.equal(
+    calls.some((call) => call.input.includes("/v1/query/")),
+    false,
+    "a rejected combinators body never reaches a query route",
   );
   await client.close();
 });

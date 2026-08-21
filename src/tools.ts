@@ -36,233 +36,11 @@ import {
   rowPageNext,
   run,
   scoped,
-  searchBody,
-  searchFeedbackHint,
   stableJson,
   toolResult,
 } from "./tool-runtime.js";
 
 export function registerLbbTools(server: McpServer, client: LbbClient): void {
-  server.registerTool(
-    "lbb_search",
-    {
-      description:
-        "Natural-language retrieval over Little Big Brain. Use `query` for one phrasing or `queries` for reciprocal-rank fusion across phrasings. Semantic graph search can return internally scored paths alongside entity and assertion results. When you can judge returned results, call lbb_commit mode=search_feedback with good=3, partial=1, bad=0 so Little Big Brain can build customer-specific qrels for embedding training.",
-      inputSchema: {
-        query: z.string().optional().describe("Natural-language query"),
-        queries: z
-          .array(z.string())
-          .min(1)
-          .optional()
-          .describe("Multiple phrasings to fuse"),
-        mode: z.enum(["hybrid", "bm25", "vector", "lexical"]).optional(),
-        top_k: z.number().int().positive().optional(),
-        profile: z
-          .enum(["ndcg_v1", "graph_aware_v1", "baseline", "scored_atom_v1"])
-          .optional(),
-        as_of: z
-          .string()
-          .optional()
-          .describe(
-            "Valid-time cursor (RFC 3339): results reflect facts true at this instant",
-          ),
-        as_of_commit_seq: z
-          .number()
-          .int()
-          .nonnegative()
-          .optional()
-          .describe(
-            "Snapshot pin: results reproduce the graph as of this commit sequence (echoed back in snapshot.as_of_commit_seq); a pin past head is an error",
-          ),
-        detail: detailSchema,
-        ...graphScope,
-      },
-      annotations: READ_ONLY,
-    },
-    ({
-      query,
-      queries,
-      mode,
-      top_k,
-      profile,
-      as_of,
-      as_of_commit_seq,
-      detail,
-      graph,
-      branch,
-    }) =>
-      run(
-        client,
-        "lbb_search",
-        detail,
-        () => {
-          const target = scoped(client, graph, branch);
-          if (queries?.length) {
-            return target.multiSearch({
-              subqueries: queries.map((q, index) => ({
-                id: `q${index}`,
-                weight: 1.0,
-                request: searchBody({
-                  query: q,
-                  mode,
-                  top_k,
-                  profile,
-                  as_of,
-                  as_of_commit_seq,
-                }),
-              })),
-              top_k: top_k ?? 10,
-              explain: false,
-            } as never);
-          }
-          const q = requireString(query, "query");
-          return target.graphSearch(
-            searchBody({
-              query: q,
-              mode,
-              top_k,
-              profile,
-              as_of,
-              as_of_commit_seq,
-            }) as never,
-          );
-        },
-        (data) => ({
-          feedback: searchFeedbackHint(data, { query, queries, graph, branch }),
-        }),
-      ),
-  );
-
-  server.registerTool(
-    "lbb_decode",
-    {
-      description:
-        "Name the relation between two entities from the admissible published vocabulary. Types may be omitted and resolved from entity names.",
-      inputSchema: {
-        source_name: z.string(),
-        source_type: z.string().optional(),
-        target_name: z.string(),
-        target_type: z.string().optional(),
-        use_model_when_forced: z.boolean().optional(),
-        detail: detailSchema,
-        ...graphScope,
-      },
-      annotations: READ_ONLY,
-    },
-    ({
-      source_name,
-      source_type,
-      target_name,
-      target_type,
-      use_model_when_forced,
-      detail,
-      graph,
-      branch,
-    }) =>
-      run(client, "lbb_decode", detail, () =>
-        scoped(client, graph, branch).decode({
-          source: { name: source_name, type: source_type },
-          target: { name: target_name, type: target_type },
-          use_model_when_forced,
-        } as never),
-      ),
-  );
-
-  server.registerTool(
-    "lbb_ground",
-    {
-      description:
-        "Ground terms to the graph's published vocabulary. complete autocompletes a prefix, resolve snaps free text to real vocabulary, and audit reports graph groundability.",
-      inputSchema: {
-        action: z.enum(["complete", "resolve", "audit"]),
-        prefix: z
-          .string()
-          .optional()
-          .describe(
-            "[complete] Text prefix to complete against the real vocabulary",
-          ),
-        text: z.string().optional().describe("[resolve] Free text to resolve"),
-        src_type: z
-          .string()
-          .optional()
-          .describe(
-            "[complete] Narrow relation completions to those admitted FROM this source type",
-          ),
-        dst_type: z
-          .string()
-          .optional()
-          .describe(
-            "[complete] Narrow relation completions to those admitted INTO this target type",
-          ),
-        kinds: z
-          .array(
-            z.enum([
-              "term",
-              "attribute_value",
-              "attribute_field",
-              "class",
-              "relation",
-              "property",
-            ]),
-          )
-          .optional()
-          .describe("Restrict to these vocabulary kinds (default: all)"),
-        top_k: z
-          .number()
-          .int()
-          .positive()
-          .max(50)
-          .optional()
-          .describe("Max results (default 8)"),
-        sample: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("[audit] Entities sampled for narrowing recall"),
-        detail: detailSchema,
-        ...graphScope,
-      },
-      annotations: READ_ONLY,
-    },
-    ({
-      action,
-      prefix,
-      text,
-      src_type,
-      dst_type,
-      kinds,
-      top_k,
-      sample,
-      detail,
-      graph,
-      branch,
-    }) =>
-      run(client, "lbb_ground", detail, () => {
-        const target = scoped(client, graph, branch);
-        if (action === "resolve") {
-          return target.resolveTerm({
-            text: requireString(text, "text"),
-            kinds: (kinds ?? ["class", "relation", "property"]) as never,
-            top_k,
-          } as never);
-        }
-        if (action === "audit") {
-          return target.groundability(sample == null ? {} : { sample });
-        }
-        const context =
-          src_type !== undefined || dst_type !== undefined
-            ? { src_type, dst_type }
-            : undefined;
-        return target.suggest({
-          prefix: requireString(prefix, "prefix"),
-          kinds: kinds as never,
-          context,
-          limit: top_k,
-        } as never);
-      }),
-  );
-
   server.registerTool(
     "lbb_inspect",
     {
@@ -357,7 +135,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), analyze. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), analyze. SPARQL is the only query surface. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -454,23 +232,19 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 as_of_commit_seq: asOfCommitSeq,
                 as_of_valid_time: asOfValidTime ?? null,
               };
-              const combinators = request.combinators;
-              const hasCombinators =
-                Array.isArray(combinators) && combinators.length > 0;
-              // HAVING runs on the SPARQL-select path; the combinator/analytics
-              // path does not evaluate it. Routing a having+combinators body to
-              // analytics would silently drop the filter, so reject it loudly
-              // instead (the schema/runtime mismatch the feedback hit).
-              const hasHaving =
-                Array.isArray(request.having) && request.having.length > 0;
-              if (hasCombinators && hasHaving) {
+              // The analytics route is gone; structured bodies run only on the
+              // SPARQL-select path, which rejects unknown fields. Name the
+              // removal here so a `combinators` body fails with an actionable
+              // message instead of an opaque schema rejection.
+              if (
+                Array.isArray(request.combinators) &&
+                request.combinators.length > 0
+              ) {
                 throw new Error(
-                  "HAVING is not evaluated alongside UNION/OPTIONAL/MINUS combinators — remove the combinators to use HAVING (grouped aggregation), or apply the threshold client-side.",
+                  "`combinators` (UNION/OPTIONAL/MINUS/EXISTS) is no longer accepted by structured mode; the analytics route was removed. Express the same query as SPARQL text with mode=sparql.",
                 );
               }
-              const response = hasCombinators
-                ? await target.analytics(request as never)
-                : await target.sparql(request as never);
+              const response = await target.sparql(request as never);
               const rowPage = rowPageFrom(response);
               const cursorBase: Omit<QueryCursor, "offset"> = {
                 v: 1,
@@ -635,7 +409,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_commit",
     {
       description:
-        "Write graph facts, retract them, or label search results. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset; mode=search_feedback labels query/result relevance after lbb_search (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills.",
+        "Write graph facts, retract them, or label ranked results. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset; mode=search_feedback stores query/result relevance labels (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills.",
       inputSchema: {
         idempotency_key: z.string().optional(),
         mode: z.enum(["facts", "retract", "search_feedback"]).optional(),
