@@ -19,6 +19,8 @@ surface, so the retrieval tools that fronted the removed routes are gone.
   `sparql` are unchanged.
 - `lbb_inspect`, `lbb_models`, `lbb_commit` (including mode=search_feedback),
   `lbb_configure`, `lbb_branch`, and `lbb_observe` are unchanged.
+- Requires `@littlebigbrain/client` 0.11.x, the release with the same query-surface removal.
+
 
 ## 0.3.0 (2026-08-21)
 
