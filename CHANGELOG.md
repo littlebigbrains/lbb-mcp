@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.4.1 (2026-08-22)
+
+- Publish against the maintained `@littlebigbrain/client` 0.11.x line so new
+  MCP installations receive the publication-readiness fixes. The previously
+  published 0.4.0 manifest still referenced the older 0.10.x client line.
+
 ## 0.4.0 (2026-08-21)
 
 Breaking removal of every non-SPARQL query surface. SPARQL is the only query
