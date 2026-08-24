@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.4.2 (2026-08-24)
+
+- Publish against the maintained `@littlebigbrain/client` 0.12.x line. MCP's
+  schema publication and conformance tools are unchanged; request-time SHACL
+  models and `/v1/query/shacl` were never part of its supported tool surface.
+
 ## 0.4.1 (2026-08-22)
 
 - Publish against the maintained `@littlebigbrain/client` 0.11.x line so new
