@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.4.3 (2026-08-31)
+
+- Publish against the `@littlebigbrain/client` 0.13.x line, which adds the
+  observed-schema summary and publication-status client methods. MCP's tool
+  surface is unchanged.
+
 ## 0.4.2 (2026-08-24)
 
 - Publish against the maintained `@littlebigbrain/client` 0.12.x line. MCP's
