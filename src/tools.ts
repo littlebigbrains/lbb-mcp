@@ -187,50 +187,53 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                   "cursor body does not match the supplied body argument",
                 );
               }
-              // The body's valid-time field is `as_of_valid_time`; the server
-              // ignores a bare `as_of` key, so a naive caller would chart
-              // head-snapshot data and never know. Turn that silent no-op into a
-              // clear error pointing at the right spelling.
-              if (body.as_of !== undefined) {
-                throw new Error(
-                  "the structured body has an `as_of` key, which the server ignores — use the top-level `as_of` argument (valid-time, RFC3339) or rename it to `as_of_valid_time` inside the body",
-                );
-              }
               if (
-                cursor &&
-                args.as_of !== undefined &&
-                args.as_of !== cursor.as_of
+                args.as_of !== undefined ||
+                cursor?.as_of !== undefined ||
+                body.as_of !== undefined ||
+                body.as_of_valid_time !== undefined
               ) {
                 throw new Error(
-                  "cursor as_of does not match the supplied as_of argument",
+                  "structured SPARQL valid-time selectors are not supported; use as_of_commit_seq for a retained commit snapshot, or start a new query without the valid-time selector",
                 );
               }
-              // Commit-seq pin: top-level arg, else the body field, pinned for
-              // continuation. Valid-time pin: cursor, else top-level arg, else the
-              // body's `as_of_valid_time`. Both are resolved here and set
-              // explicitly so the request never depends on the body's spelling.
+              // Resolve the top-level or body commit pin once and retain it
+              // across cursor pages. The API validates its exact RDF lineage.
+              if (
+                body.as_of_commit_seq !== undefined &&
+                body.as_of_commit_seq !== null &&
+                (typeof body.as_of_commit_seq !== "number" ||
+                  !Number.isSafeInteger(body.as_of_commit_seq) ||
+                  body.as_of_commit_seq < 0)
+              ) {
+                throw new Error(
+                  "body as_of_commit_seq must be a nonnegative safe integer",
+                );
+              }
               const requestedCommitSeq =
                 args.as_of_commit_seq ??
                 (typeof body.as_of_commit_seq === "number"
                   ? body.as_of_commit_seq
                   : undefined);
+              if (
+                cursor &&
+                args.as_of_commit_seq !== undefined &&
+                args.as_of_commit_seq !== cursor.as_of_commit_seq
+              ) {
+                throw new Error(
+                  "cursor as_of_commit_seq does not match the supplied as_of_commit_seq argument",
+                );
+              }
               const asOfCommitSeq = await queryCommitPin(
                 target,
                 requestedCommitSeq,
                 cursor,
               );
-              const asOfValidTime =
-                cursor?.as_of ??
-                args.as_of ??
-                (typeof body.as_of_valid_time === "string"
-                  ? body.as_of_valid_time
-                  : undefined);
               const request: Record<string, unknown> = {
                 ...body,
                 limit: rowLimit,
                 offset,
                 as_of_commit_seq: asOfCommitSeq,
-                as_of_valid_time: asOfValidTime ?? null,
               };
               // The analytics route is gone; structured bodies run only on the
               // SPARQL-select path, which rejects unknown fields. Name the
@@ -254,7 +257,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 detail,
                 row_limit: rowLimit,
                 body,
-                as_of: asOfValidTime,
                 as_of_commit_seq: asOfCommitSeq,
               };
               const next = rowPageNext(cursorBase, rowPage);
@@ -287,13 +289,9 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 "cursor query does not match the supplied query argument",
               );
             }
-            if (
-              cursor &&
-              args.as_of !== undefined &&
-              args.as_of !== cursor.as_of
-            ) {
+            if (args.as_of !== undefined || cursor?.as_of !== undefined) {
               throw new Error(
-                "cursor as_of does not match the supplied as_of argument",
+                "SPARQL text valid-time as_of is not supported; use as_of_commit_seq for a retained commit snapshot, or start a new query without as_of",
               );
             }
             if (
@@ -305,7 +303,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 "cursor as_of_commit_seq does not match the supplied as_of_commit_seq argument",
               );
             }
-            const asOf = cursor?.as_of ?? args.as_of;
             const asOfCommitSeq = await queryCommitPin(
               target,
               args.as_of_commit_seq,
@@ -313,12 +310,11 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             );
             const response = await target.sparqlText({
               query,
-              as_of_valid_time: asOf ?? null,
               as_of_commit_seq: asOfCommitSeq ?? null,
               limit: rowLimit,
               offset,
-            } as never);
-            const data = JSON.parse((response as { results: string }).results);
+            });
+            const data = JSON.parse(response.results);
             const rowPage = rowPageFrom(response);
             const cursorBase: Omit<QueryCursor, "offset"> = {
               v: 1,
@@ -328,7 +324,6 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               detail,
               row_limit: rowLimit,
               query,
-              as_of: asOf,
               as_of_commit_seq: asOfCommitSeq,
             };
             const next = rowPageNext(cursorBase, rowPage);

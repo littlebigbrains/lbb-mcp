@@ -81,7 +81,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "c05bf8cbbacdbe8510f9f37bb8e3c01f9e6036823c762e366cc7bf2f95af00f9",
+    "560c5205e0b55476c02be44a44dbbc7202d2578ce78e6cfcf02abc65e1c3afa0",
   );
   await client.close();
 });
@@ -158,6 +158,27 @@ test("dispatch tools advertise real object input schemas (regression: object arg
   );
 
   await client.close();
+});
+
+test("lbb_query advertises commit pins for SPARQL text and rejects valid-time selectors", async () => {
+  const client = await connect(async () => ok());
+  try {
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool) => tool.name === "lbb_query")
+      ?.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    };
+    assert.match(
+      schema.properties.query.description ?? "",
+      /Valid-time as_of is unsupported; use as_of_commit_seq/,
+    );
+    assert.match(
+      schema.properties.as_of.description ?? "",
+      /Unsupported in structured and SPARQL text modes; use as_of_commit_seq/,
+    );
+  } finally {
+    await client.close();
+  }
 });
 
 test("lbb_query documents the real structured FILTER shape with a runnable example", async () => {
