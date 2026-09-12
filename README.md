@@ -68,6 +68,12 @@ missing.
 
 Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
 
+Both `lbb_query` SPARQL modes (`sparql` and `structured`) support retained commit reads
+through `as_of_commit_seq`. When omitted, the connector pins the current head
+commit and reuses it for cursor pages. Valid-time `as_of` is unsupported and is
+rejected before an API call, including when carried in an old cursor. Start a
+new query without that selector or choose a retained commit sequence.
+
 ## Embed the server
 
 For self-hosting behind your own auth, the package also serves the tools over HTTP:

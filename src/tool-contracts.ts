@@ -469,13 +469,13 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
             '{ "value": <typed> } — and <typed> is exactly one wrapper: { "str": "…" }, { "i64": 5 }, { "f64": 0.9 }, { "bool": true }, { "date_time": "2026-01-01" } (RFC3339), or { "entity": { "entity_type": "T", "name": "N" } }. ' +
             'Complete runnable example — deals whose amount ≥ 1000000: { "patterns": [{ "subject": { "var": "d" }, "predicate": "for_client", "object": { "var": "c" } }], "filters": [{ "compare": { "op": "ge", "left": { "property": { "var": "d", "field": "amount" } }, "right": { "value": { "f64": 1000000 } } } }] }. ' +
             "Comparisons use the field's real declared type (numbers as numbers, datetimes as instants), so they run server-side. " +
-            'GROUP BY supports both entity-identity keys (group_by: ["s"]) and typed scalar keys via group_keys: a property value ({ property: { var, field, as } }) or a calendar bucket of a datetime property ({ date_bucket: { var, field, granularity: year|month|week|day|hour, as } }). Scalar keys come back per group under value_keys[as] — so a per-area breakdown or a commits-per-month time series is one server-side query, no client-side bucketing. Worked example -- commits per area per month in one query: { "patterns": [{ "subject": { "var": "c" }, "predicate": "committed_to", "object": { "var": "repo" } }], "group_keys": [{ "date_bucket": { "var": "c", "field": "committed_at", "granularity": "month", "as": "m" } }, { "property": { "var": "c", "field": "area", "as": "area" } }], "aggregates": [{ "func": "count", "as": "n" }], "order_by": [{ "var": "m" }] } -- area and committed_at are typed entity attributes (set via entity_properties; readable flat under attributes, never a nested metadata blob), and each group returns value_keys.m + value_keys.area + aggregates.n. `having: [...]` takes the same filter shape over the aggregated groups (e.g. { "compare": { "op": "gt", "left": { "var": "n" }, "right": { "value": { "i64": 10 } } } }). A `combinators` key (UNION/OPTIONAL/MINUS/EXISTS) is rejected here; express those with SPARQL text under mode=sparql. Cheap aggregate count: pair an equality having (e.g. { "compare": { "op": "eq", "left": { "var": "n" }, "right": { "value": { "i64": 4 } } } }) with row_limit: 1 -- the response row_page.total reports how many groups match without materializing them all, so you read the count off row_page.total instead of paging every matching row. For snapshot pinning prefer the top-level `as_of` / `as_of_commit_seq` arguments below; a bare `as_of` key inside the body is rejected (the body\'s valid-time field is `as_of_valid_time`).',
+            'GROUP BY supports both entity-identity keys (group_by: ["s"]) and typed scalar keys via group_keys: a property value ({ property: { var, field, as } }) or a calendar bucket of a datetime property ({ date_bucket: { var, field, granularity: year|month|week|day|hour, as } }). Scalar keys come back per group under value_keys[as] — so a per-area breakdown or a commits-per-month time series is one server-side query, no client-side bucketing. Worked example -- commits per area per month in one query: { "patterns": [{ "subject": { "var": "c" }, "predicate": "committed_to", "object": { "var": "repo" } }], "group_keys": [{ "date_bucket": { "var": "c", "field": "committed_at", "granularity": "month", "as": "m" } }, { "property": { "var": "c", "field": "area", "as": "area" } }], "aggregates": [{ "func": "count", "as": "n" }], "order_by": [{ "var": "m" }] } -- area and committed_at are typed entity attributes (set via entity_properties; readable flat under attributes, never a nested metadata blob), and each group returns value_keys.m + value_keys.area + aggregates.n. `having: [...]` takes the same filter shape over the aggregated groups (e.g. { "compare": { "op": "gt", "left": { "var": "n" }, "right": { "value": { "i64": 10 } } } }). A `combinators` key (UNION/OPTIONAL/MINUS/EXISTS) is rejected here; express those with SPARQL text under mode=sparql. Cheap aggregate count: pair an equality having (e.g. { "compare": { "op": "eq", "left": { "var": "n" }, "right": { "value": { "i64": 4 } } } }) with row_limit: 1 -- the response row_page.total reports how many groups match without materializing them all, so you read the count off row_page.total instead of paging every matching row. For snapshot pinning use the top-level `as_of_commit_seq` argument or the same body field. Valid-time `as_of` and `as_of_valid_time` selectors are unsupported and rejected before HTTP.',
         ),
       as_of: z
         .string()
         .optional()
         .describe(
-          "Snapshot pin (valid-time, RFC3339): evaluate the body as of this instant. Folded into the request's `as_of_valid_time`. Top-level here is the supported spelling — a bare `as_of` inside the body is rejected, since the server silently ignores it.",
+          "Unsupported in structured and SPARQL text modes; use as_of_commit_seq for a retained commit snapshot.",
         ),
       as_of_commit_seq: z
         .number()
@@ -497,9 +497,13 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .optional()
         .describe(
-          `SPARQL 1.1 query text (SELECT or ASK). ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10`,
+          `SPARQL 1.1 query text (SELECT or ASK). Valid-time as_of is unsupported; use as_of_commit_seq for a retained commit snapshot. ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10`,
         ),
-      as_of: z.string().optional(),
+      // Kept for an actionable error when an older connector sends this field.
+      as_of: z
+        .string()
+        .optional()
+        .describe("Unsupported in SPARQL text mode; use as_of_commit_seq."),
       as_of_commit_seq: z
         .number()
         .int()

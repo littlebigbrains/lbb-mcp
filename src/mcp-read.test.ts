@@ -1,7 +1,109 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { type FetchLike } from "@littlebigbrain/client";
+import { type FetchLike, type Schemas } from "@littlebigbrain/client";
 import { connect, ok, payload, type Call } from "./test-support.js";
+
+test("SPARQL text requests match the API contract with default and explicit commit pins", async () => {
+  // Pin the HTTP request keys against the generated API contract, including in
+  // the standalone MCP repository where the monorepo's OpenAPI file is absent.
+  const fields: Record<keyof Schemas["SparqlTextRequest"], true> = {
+    query: true,
+    as_of_commit_seq: true,
+    limit: true,
+    offset: true,
+    entailment: true,
+    reason: true,
+  };
+  for (const commit of [undefined, 0, 7]) {
+    const calls: Call[] = [];
+    const client = await connect(async (input, init) => {
+      calls.push({ input, init: init ?? {} });
+      if (input.includes("/v1/graph/metadata"))
+        return ok({ snapshot: { commit_seq: 9 } });
+      const body = JSON.parse(init?.body ?? "{}");
+      const unknown = Object.keys(body).filter(
+        (key) => !Object.hasOwn(fields, key),
+      );
+      if (unknown.length)
+        return {
+          ok: false,
+          status: 400,
+          text: async () =>
+            JSON.stringify({
+              error: { message: `unknown field ${unknown[0]}` },
+            }),
+        };
+      return ok({ results: JSON.stringify({ head: {}, boolean: true }) });
+    });
+    try {
+      const result = await client.callTool({
+        name: "lbb_query",
+        arguments: {
+          mode: "sparql",
+          query: "ASK {}",
+          as_of_commit_seq: commit,
+        },
+      });
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      assert.equal(
+        (payload(result).data as { boolean: boolean }).boolean,
+        true,
+      );
+      const sent = JSON.parse(calls.at(-1)?.init.body ?? "{}");
+      assert.equal(sent.as_of_commit_seq, commit ?? 9);
+      assert.equal(Object.hasOwn(sent, "as_of_valid_time"), false);
+      assert.equal(calls.length, commit === undefined ? 2 : 1);
+    } finally {
+      await client.close();
+    }
+  }
+});
+
+test("SPARQL text rejects explicit and cursor valid-time pins before HTTP", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ snapshot: { commit_seq: 9 }, results: "{}" });
+  });
+  const cursor = (as_of: unknown) =>
+    Buffer.from(
+      JSON.stringify({
+        v: 1,
+        mode: "sparql",
+        detail: "compact",
+        row_limit: 20,
+        offset: 20,
+        query: "SELECT * WHERE { ?s ?p ?o }",
+        as_of_commit_seq: 7,
+        as_of,
+      }),
+    ).toString("base64url");
+  try {
+    for (const selector of [
+      { as_of: "2026-09-12T00:00:00Z" },
+      { as_of: "" },
+      { cursor: cursor("2026-09-12T00:00:00Z") },
+      { cursor: cursor(null) },
+    ]) {
+      const result = await client.callTool({
+        name: "lbb_query",
+        arguments: {
+          mode: "sparql",
+          query: "SELECT * WHERE { ?s ?p ?o }",
+          ...selector,
+        },
+      });
+      assert.equal(result.isError, true);
+      assert.match(
+        (result.content as { text: string }[])[0].text,
+        /valid-time.*not supported.*as_of_commit_seq/,
+      );
+    }
+    assert.deepEqual(calls, []);
+  } finally {
+    await client.close();
+  }
+});
 
 test("lbb_models preserves published-root APIs", async () => {
   const calls: Call[] = [];
@@ -335,62 +437,132 @@ test("lbb_query mode=sparql normalizes class/property IRIs, preserves %-escapes,
   await client.close();
 });
 
-test("lbb_query structured accepts top-level as_of / as_of_commit_seq and rejects a bare body as_of", async () => {
+test("structured SPARQL accepts commit pins and rejects every valid-time spelling before HTTP", async () => {
   const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
+  const client = await connect(async (input, init) => {
     calls.push({ input, init: init ?? {} });
     if (input.includes("/v1/graph/metadata"))
       return ok({ snapshot: { commit_seq: 9 } });
-    return ok({ ok: true, groups: [] });
-  };
-  const client = await connect(fetch);
+    return ok({ solutions: [], groups: [] });
+  });
+  try {
+    for (const args of [
+      { body: { patterns: [] }, as_of_commit_seq: 0 },
+      { body: { patterns: [], as_of_commit_seq: 3 } },
+      { body: { patterns: [], as_of_commit_seq: 3 }, as_of_commit_seq: 4 },
+      { body: { patterns: [] } },
+    ]) {
+      const result = await client.callTool({
+        name: "lbb_query",
+        arguments: { mode: "structured", ...args },
+      });
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      const sent = JSON.parse(calls.at(-1)?.init.body ?? "{}");
+      assert.equal(
+        sent.as_of_commit_seq,
+        args.as_of_commit_seq ?? args.body.as_of_commit_seq ?? 9,
+      );
+      assert.equal(Object.hasOwn(sent, "as_of_valid_time"), false);
+    }
+    const acceptedCalls = calls.length;
+    for (const args of [
+      { as_of: "2026-09-12T00:00:00Z", body: { patterns: [] } },
+      { body: { patterns: [], as_of: "2026-09-12T00:00:00Z" } },
+      { body: { patterns: [], as_of_valid_time: "2026-09-12T00:00:00Z" } },
+      { body: { patterns: [], as_of_valid_time: null } },
+      {
+        cursor: Buffer.from(
+          JSON.stringify({
+            v: 1,
+            mode: "structured",
+            detail: "compact",
+            row_limit: 20,
+            offset: 20,
+            body: { patterns: [] },
+            as_of_commit_seq: 3,
+            as_of: "2026-09-12T00:00:00Z",
+          }),
+        ).toString("base64url"),
+      },
+    ]) {
+      const result = await client.callTool({
+        name: "lbb_query",
+        arguments: { mode: "structured", ...args },
+      });
+      assert.equal(result.isError, true);
+      assert.match(
+        (result.content as { text: string }[])[0].text,
+        /valid-time.*not supported.*as_of_commit_seq/,
+      );
+    }
+    assert.equal(calls.length, acceptedCalls);
+  } finally {
+    await client.close();
+  }
+});
 
-  // Top-level as_of_commit_seq pins without a metadata round-trip and lands in
-  // the request body (the advertised top-level param now actually works).
-  await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "structured",
-      body: { patterns: [] },
-      as_of_commit_seq: 3,
-    },
+test("structured SPARQL cursor pages retain their commit and refuse a changed pin", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    if (input.includes("/v1/graph/metadata"))
+      return ok({ snapshot: { commit_seq: 7 } });
+    const body = JSON.parse(init?.body ?? "{}");
+    return ok({
+      solutions: [{}],
+      row_page: {
+        returned: 1,
+        total: 3,
+        limit: 1,
+        offset: body.offset,
+        has_more: true,
+        next_offset: body.offset + 1,
+      },
+    });
   });
-  // Top-level as_of (valid-time) is folded into as_of_valid_time — the field the
-  // server reads — instead of being silently dropped.
-  await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "structured",
-      body: { patterns: [] },
-      as_of: "2026-03-01T00:00:00Z",
-    },
-  });
-  // A bare `as_of` key inside the body is the silent-no-op trap: turn it into a
-  // clear, actionable error rather than charting head-snapshot data.
-  const trap = await client.callTool({
-    name: "lbb_query",
-    arguments: {
-      mode: "structured",
-      body: { patterns: [], as_of: "2026-03-01T00:00:00Z" },
-    },
-  });
-
-  // Call 0: explicit commit seq pins directly (no metadata round-trip).
-  const first = JSON.parse(calls[0].init.body ?? "{}");
-  assert.match(calls[0].input, /\/v1\/query\/sparql\?/);
-  assert.equal(first.as_of_commit_seq, 3);
-  // Call 1: metadata fetch (no commit seq given), then call 2: the sparql request.
-  assert.match(calls[1].input, /\/v1\/graph\/metadata\?/);
-  const second = JSON.parse(calls[2].init.body ?? "{}");
-  assert.match(calls[2].input, /\/v1\/query\/sparql\?/);
-  assert.equal(second.as_of_valid_time, "2026-03-01T00:00:00Z");
-  assert.equal(second.as_of_commit_seq, 9); // pinned from head metadata
-  assert.equal(trap.isError, true);
-  assert.match(
-    (trap.structuredContent as { error: { message: string } }).error.message,
-    /as_of_valid_time/,
-  );
-  await client.close();
+  try {
+    const first = payload(
+      await client.callTool({
+        name: "lbb_query",
+        arguments: {
+          mode: "structured",
+          body: { patterns: [], as_of_commit_seq: 3 },
+          as_of_commit_seq: 7,
+          row_limit: 1,
+        },
+      }),
+    );
+    assert.equal(typeof first.next?.cursor, "string");
+    const second = await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "structured", cursor: first.next?.cursor },
+    });
+    assert.notEqual(second.isError, true);
+    assert.equal(
+      calls.filter((call) => call.input.includes("/v1/graph/metadata")).length,
+      0,
+    );
+    const sent = JSON.parse(calls.at(-1)?.init.body ?? "{}");
+    assert.equal(sent.as_of_commit_seq, 7);
+    assert.equal(sent.offset, 1);
+    assert.equal(Object.hasOwn(sent, "as_of_valid_time"), false);
+    const conflict = await client.callTool({
+      name: "lbb_query",
+      arguments: {
+        mode: "structured",
+        cursor: first.next?.cursor,
+        as_of_commit_seq: 8,
+      },
+    });
+    assert.equal(conflict.isError, true);
+    assert.equal(calls.length, 2);
+    assert.match(
+      (conflict.content as { text: string }[])[0].text,
+      /cursor as_of_commit_seq/,
+    );
+  } finally {
+    await client.close();
+  }
 });
 
 test("lbb_query forwards typed-attribute group_keys/date_bucket/filter/aggregate bodies untouched", async () => {
@@ -582,6 +754,18 @@ test("lbb_query SPARQL row cursors continue at the next offset", async () => {
   );
   assert.equal(JSON.parse(calls[2].init.body ?? "{}").offset, 100);
   assert.equal(JSON.parse(calls[2].init.body ?? "{}").as_of_commit_seq, 42);
+  for (const call of calls.filter((call) =>
+    call.input.includes("/v1/query/sparql-text"),
+  )) {
+    assert.equal(
+      Object.hasOwn(JSON.parse(call.init.body ?? "{}"), "as_of_valid_time"),
+      false,
+    );
+  }
+  const savedCursor = JSON.parse(
+    Buffer.from(first.next?.cursor as string, "base64url").toString("utf8"),
+  );
+  assert.equal(Object.hasOwn(savedCursor, "as_of"), false);
   assert.equal(second.row_page?.offset, 100);
   assert.match(
     (second.data as { results: { bindings: { s: { value: string } }[] } })
