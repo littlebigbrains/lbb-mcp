@@ -2,6 +2,13 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.5.1 (2026-09-18)
+
+- Bound query pages by UTF-8 bytes while preserving complete RDF values.
+- Advance continuation cursors by the number of rows actually delivered, so
+  large pages cannot skip rows when they reach the output budget.
+- Return an actionable error when a single complete row exceeds that budget.
+
 ## 0.5.0 (2026-09-18)
 
 - Return complete ontology and schema definitions with bounded, version-bound

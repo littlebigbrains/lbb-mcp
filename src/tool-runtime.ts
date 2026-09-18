@@ -427,107 +427,74 @@ export function queryEnvelope(
   next?: Record<string, unknown>,
   repage?: Omit<QueryCursor, "offset">,
 ) {
-  const detail = normalizeDetail(detailArg);
-  const limits = compactLimits(detail);
-  const state = { truncated: false };
-  const returned = rowPage?.returned;
-  const rowCap = rowPage
-    ? Math.max(limits.maxItems, rowPage.returned)
-    : limits.maxItems;
-  let data = truncateValue(value, { ...limits, maxItems: rowCap }, state);
-  const partialRows = rowPage
-    ? rowPage.returned < rowPage.total || rowPage.has_more
-    : false;
-  const rowText = rowPage
-    ? rowPage.returned < rowPage.total
-      ? `returned ${rowPage.returned} of ${rowPage.total} rows`
-      : `returned ${rowPage.returned} rows`
-    : undefined;
-  const serverFlags = serverTruncationFlags(value);
-  const serverTruncated = serverFlags.length > 0;
-  const serverText = serverTruncated
-    ? ` [server-truncated: ${serverFlags.join(", ")}]`
-    : "";
-  let result: Record<string, unknown> = {
-    summary: rowText
-      ? `${label}: ${rowText}${serverText}${state.truncated ? " [truncated output]" : ""}`
-      : defaultSummary(label, value, state.truncated),
-    data,
-    counts: countsFor(value),
-    row_page: rowPage,
-    truncated: state.truncated || partialRows || serverTruncated || undefined,
-    next:
-      partialRows && next
-        ? next
-        : state.truncated && nextDetail(detail)
-          ? { detail: nextDetail(detail) }
-          : next,
-  };
-
-  let text = JSON.stringify(result, null, 2);
-  if (text.length <= HARD_OUTPUT_CHARS) return result;
-
-  // The full result overflows one MCP tool result, so the displayed rows are
-  // capped to fit. `row_page`/`counts` still describe the *server* page, so
-  // reporting only those reads as "every row delivered" even when the display
-  // was cut — the recurring MCP false-positive. So: state shown-vs-returned
-  // explicitly (`rows_shown`), and give advice that matches reality —
-  //   * server itself withheld rows (partialRows): page with the existing cursor;
-  //   * server returned the complete set but it is too big: page the same set at
-  //     a smaller row_limit via a fresh cursor (offered here as `next`) or narrow
-  //     with HAVING.
-  // "page with the cursor" is never suggested unless a cursor is actually given.
-  const remedy = partialRows
-    ? " page with the cursor for the remaining rows"
-    : repage
-      ? " re-run with the returned cursor to page the full set at a smaller row_limit, or add a HAVING filter to narrow the groups"
-      : " re-run with a lower row_limit to page the full set, or add a HAVING filter to narrow the groups";
-  const capNote = (shown: number): string =>
-    returned !== undefined && shown < returned
-      ? ` [MCP showed ${shown} of ${returned} rows — over the ${HARD_OUTPUT_CHARS}-char output budget]`
-      : " [hard-capped for MCP output]";
-  for (const cap of [200, 100, 50, 25, 10, 5, 3]) {
-    const hardState = { truncated: true };
-    data = truncateValue(value, { maxItems: cap, maxString: 160 }, hardState);
-    const shown = returned !== undefined ? Math.min(cap, returned) : cap;
-    const hardNext = partialRows
-      ? next
-      : repage
-        ? continuationNext(repage, shown, Math.max(1, shown))
+  // A query page is data, not a preview: keep entire terms/values and page
+  // the rows themselves to fit the wire budget. The cursor must advance by
+  // what the caller actually received, even inside a partial server page.
+  const source = value as Record<string, unknown>;
+  const results = source?.results as { bindings?: unknown[] } | undefined;
+  const key = Array.isArray(results?.bindings)
+    ? "bindings"
+    : Array.isArray(source?.groups) && source.groups.length > 0
+      ? "groups"
+      : Array.isArray(source?.solutions)
+        ? "solutions"
         : undefined;
-    result = {
-      summary: rowText
-        ? `${label}: ${rowText}${serverText}${capNote(shown)} —${remedy}`
-        : `${label}${capNote(shown)} —${remedy}`,
-      data,
-      counts: countsFor(value),
-      row_page: rowPage,
-      rows_shown: returned !== undefined ? shown : undefined,
-      truncated: true,
-      next: hardNext,
-    };
-    text = JSON.stringify(result, null, 2);
-    if (text.length <= HARD_OUTPUT_CHARS) return result;
+  const rows =
+    key === "bindings" ? results?.bindings : key ? source[key] : undefined;
+  if (!rowPage || !repage || !Array.isArray(rows)) {
+    return { ...envelope(label, value, detailArg, next), row_page: rowPage };
   }
-
-  return {
-    summary: rowText
-      ? `${label}: ${rowText}${serverText}${capNote(0)} —${remedy}`
-      : `${label}${capNote(0)} —${remedy}`,
-    data: {
-      note: "The response was too large for the MCP tool result even at the minimum row cap. Page with a smaller row_limit or add a HAVING filter to narrow the groups.",
-      preview: text.slice(0, 20_000),
-    },
-    counts: countsFor(value),
-    row_page: rowPage,
-    rows_shown: returned !== undefined ? 0 : undefined,
-    truncated: true,
-    next: partialRows
-      ? next
-      : repage
-        ? continuationNext(repage, 0, 1)
+  if (rows.length !== rowPage.returned) {
+    throw new Error(
+      "Query row count does not match its page; refusing a cursor that could skip rows.",
+    );
+  }
+  const flags = serverTruncationFlags(value);
+  const build = (count: number): Record<string, unknown> => {
+    const hasMore = count < rows.length || rowPage.has_more;
+    const page: RowPage = {
+      ...rowPage,
+      returned: count,
+      has_more: hasMore,
+      next_offset: hasMore ? rowPage.offset + count : undefined,
+    };
+    const selected = rows.slice(0, count);
+    const data =
+      key === "bindings"
+        ? { ...source, results: { ...results, bindings: selected } }
+        : { ...source, [key!]: selected, row_page: page };
+    return {
+      summary: `${label}: returned ${count}${count < page.total ? ` of ${page.total}` : ""} rows${flags.length ? ` [server-truncated: ${flags.join(", ")}]` : ""}${count < rows.length ? " [byte-bounded page; continue with the cursor]" : ""}`,
+      data,
+      counts: countsFor(data),
+      row_page: page,
+      rows_shown: count < rows.length ? count : undefined,
+      truncated: hasMore || flags.length > 0 || undefined,
+      next: hasMore
+        ? continuationNext(repage, page.offset + count, repage.row_limit)
         : undefined,
+    };
   };
+  // Leave room for tool-level normalization notes added by the caller. Count
+  // UTF-8 bytes, including multibyte literals, not JavaScript code units.
+  const fits = (page: Record<string, unknown>) =>
+    Buffer.byteLength(JSON.stringify(page, null, 2), "utf8") <=
+    HARD_OUTPUT_CHARS - 2048;
+  const full = build(rows.length);
+  if (fits(full)) return full;
+  let lo = 0;
+  let hi = rows.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (fits(build(mid))) lo = mid;
+    else hi = mid - 1;
+  }
+  if (lo === 0) {
+    throw new Error(
+      "One query row exceeds the MCP output budget. Project fewer fields or use the SPARQL HTTP API for this value; no rows were skipped.",
+    );
+  }
+  return build(lo);
 }
 
 export function toolResult(value: Record<string, unknown>) {

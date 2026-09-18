@@ -843,12 +843,18 @@ test("lbb_query keeps many grouped rows instead of hard-capping to 3", async () 
     result.rows_shown! < 1000,
     "rows_shown must reflect the capped display, not the server total",
   );
-  assert.match(result.summary, /showed \d+ of 1000 rows/);
+  assert.match(result.summary, /byte-bounded page/);
+  assert.equal(result.row_page?.returned, shownGroups);
   // A complete-but-too-big page must hand back a working cursor to page the full
   // set at a smaller row_limit — never advise "page with the cursor" with none.
   assert.equal(result.next?.mode, "structured");
   assert.equal(typeof result.next?.cursor, "string");
-  assert.ok((result.next?.row_limit as number) <= shownGroups);
+  assert.equal(
+    JSON.parse(
+      Buffer.from(result.next?.cursor as string, "base64url").toString(),
+    ).offset,
+    shownGroups,
+  );
   await client.close();
 });
 
@@ -950,8 +956,14 @@ test("lbb_query hard-cap on a partial server page points at the paging cursor", 
     }),
   );
   assert.equal(result.truncated, true);
-  assert.match(result.summary, /returned 300 of 4000 rows/);
-  assert.match(result.summary, /page with the cursor/);
+  assert.match(result.summary, /returned \d+ of 4000 rows/);
+  assert.equal(
+    JSON.parse(
+      Buffer.from(result.next?.cursor as string, "base64url").toString(),
+    ).offset,
+    result.row_page?.returned,
+  );
+  assert.match(result.summary, /continue with the cursor/);
   assert.equal(result.next?.mode, "sparql");
   assert.equal(typeof result.next?.cursor, "string");
   await client.close();
@@ -1090,4 +1102,61 @@ test("lbb_query rejects retired query modes", async () => {
     /mode|discriminator/i,
   );
   await client.close();
+});
+
+test("byte-bounded query pages preserve every long Unicode value at nonzero offsets", async () => {
+  const rows = Array.from({ length: 35 }, (_, i) => ({
+    value: { type: "literal", value: `${i}:` + "🧠漢字".repeat(600) },
+  }));
+  const client = await connect(async (input, init) => {
+    if (input.includes("metadata")) return ok({ snapshot: { commit_seq: 82 } });
+    const body = JSON.parse(init?.body ?? "{}");
+    assert.equal(body.as_of_commit_seq, 82);
+    const bindings = rows.slice(body.offset, body.offset + body.limit);
+    return ok({
+      results: JSON.stringify({
+        head: { vars: ["value"] },
+        results: { bindings },
+      }),
+      row_page: {
+        returned: bindings.length,
+        total: rows.length,
+        offset: body.offset,
+        limit: body.limit,
+        has_more: body.offset + bindings.length < rows.length,
+        next_offset: body.offset + bindings.length,
+      },
+    });
+  });
+  try {
+    let args: Record<string, unknown> = {
+      mode: "sparql",
+      query: "SELECT ?value WHERE {?s ?p ?value}",
+      detail: "full",
+      row_limit: 20,
+    };
+    const seen: unknown[] = [];
+    for (let page = 0; page < 20; page++) {
+      const result = await client.callTool({
+        name: "lbb_query",
+        arguments: args,
+      });
+      assert.notEqual(result.isError, true);
+      assert.ok(
+        Buffer.byteLength((result.content as { text: string }[])[0].text) <=
+          80000,
+      );
+      const body = payload(result);
+      const bindings = (body.data as { results: { bindings: unknown[] } })
+        .results.bindings;
+      assert.equal(body.row_page?.offset, seen.length);
+      assert.equal(body.row_page?.returned, bindings.length);
+      seen.push(...bindings);
+      if (!body.next) break;
+      args = body.next;
+    }
+    assert.deepEqual(seen, rows);
+  } finally {
+    await client.close();
+  }
 });
