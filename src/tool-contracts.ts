@@ -18,6 +18,9 @@ export type QueryCursor = {
   body?: Record<string, unknown>;
   as_of?: string;
   as_of_commit_seq?: number;
+  entailment?: "none" | "subclass" | "rdfs" | "owl";
+  consistency?: "eventual" | "strong";
+  min_indexed_seq?: number;
 };
 
 export const DEFAULT_DETAIL: Detail = "compact";
@@ -70,6 +73,46 @@ export const graphScope = {
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const jsonObjectArraySchema = z.array(jsonObjectSchema);
 export const readScope = { detail: detailSchema, ...graphScope };
+export const metadataPageSchema = {
+  page_size: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Maximum complete metadata entries per page; defaults to 50. Nested fields are never truncated; an oversized single entry returns serialized_json fragments to concatenate and parse.",
+    ),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      "Opaque lbb_inspect continuation. Repeat action and pass the returned next arguments; rejects changed metadata.",
+    ),
+  section: z
+    .string()
+    .optional()
+    .describe(
+      "Optional top-level array to inspect, e.g. entity_type_defs, relation_defs, property_defs, classes, or relations. Omit to page through all sections.",
+    ),
+};
+const queryConsistencySchema = {
+  consistency: z
+    .enum(["eventual", "strong"])
+    .optional()
+    .describe(
+      "Read consistency. strong requires publication through head; a pending response is retryable.",
+    ),
+  min_indexed_seq: z
+    .number()
+    .int()
+    .nonnegative()
+    .safe()
+    .optional()
+    .describe(
+      "Read-after-write publication floor. Preserved across cursor pages.",
+    ),
+};
 
 export const entitySelectorSchema = z
   .object({
@@ -169,6 +212,13 @@ export const shapeSourceSchema = z
   .strict();
 export const schemaModeSchema = z.enum(["off", "warn", "reject"]);
 export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
+  z
+    .object({
+      op: z.literal("add_super_types"),
+      entity_type: z.string(),
+      super_types: z.array(z.string()).min(1),
+    })
+    .strict(),
   z
     .object({
       op: z.literal("widen_relation"),
@@ -348,11 +398,25 @@ export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
 
 export const inspectInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("guide"), ...readScope }).strict(),
-  z.object({ action: z.literal("ontology"), ...readScope }).strict(),
+  z
+    .object({
+      action: z.literal("ontology"),
+      ...metadataPageSchema,
+      ...readScope,
+    })
+    .strict(),
   z
     .object({ action: z.literal("ontology_conformance"), ...readScope })
     .strict(),
-  z.object({ action: z.literal("schema"), ...readScope }).strict(),
+  z
+    .object({
+      action: z.literal("schema"),
+      ...metadataPageSchema,
+      ...readScope,
+    })
+    .strict(),
+  z.object({ action: z.literal("graphs"), ...readScope }).strict(),
+  z.object({ action: z.literal("publication"), ...readScope }).strict(),
   z
     .object({
       action: z.literal("ontology_search"),
@@ -449,7 +513,7 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
 // agent write a valid query on the first attempt instead of round-tripping
 // through the ontology to reverse-engineer term IRIs.
 export const SPARQL_IRI_GUIDE =
-  'IRI scheme: relations are <https://littlebigbrain.com/r/NAME> (NAME lowercased, e.g. writes_to; reverse a relation with the ^ path operator, no stored inverse triple). Types are <https://littlebigbrain.com/class/NAME> (lowercased), matched as `?x a <…/class/NAME>` with rdfs:subClassOf closure on by default. Property fields are <https://littlebigbrain.com/p/NAME> (lowercased). The local name is ALWAYS lowercase — an uppercase one (e.g. <…/r/FOR_CLIENT>) is a different, non-existent IRI that silently matches nothing; this tool auto-lowercases the local name of /r/, /class/, and /p/ IRIs for you and adds a `notes` entry when it does, so a stray uppercase still resolves. (Structured mode\'s `predicate` is case-insensitive on its own.) Entities are content-addressed <https://littlebigbrain.com/e/HASH> — never build an entity IRI from a name; anchor a named entity by its label instead: `?e <http://www.w3.org/2000/01/rdf-schema#label> "Acme"`. Discover the exact relation and type names with lbb_inspect action=ontology. SELECT and ASK only (CONSTRUCT/DESCRIBE are rejected).';
+  'IRI scheme: relations are <https://littlebigbrain.com/r/NAME> (NAME lowercased, e.g. writes_to; reverse a relation with the ^ path operator, no stored inverse triple). Types are <https://littlebigbrain.com/class/NAME> (lowercased), matched as `?x a <…/class/NAME>` with explicit entailment=subclass, rdfs, or owl for inference (default none). Property fields are <https://littlebigbrain.com/p/NAME> (lowercased). The local name is ALWAYS lowercase — an uppercase one (e.g. <…/r/FOR_CLIENT>) is a different, non-existent IRI that silently matches nothing; this tool auto-lowercases the local name of /r/, /class/, and /p/ IRIs for you and adds a `notes` entry when it does, so a stray uppercase still resolves. (Structured mode\'s `predicate` is case-insensitive on its own.) Entities are content-addressed <https://littlebigbrain.com/e/HASH> — never build an entity IRI from a name; anchor a named entity by its label instead: `?e <http://www.w3.org/2000/01/rdf-schema#label> "Acme"`. Discover the exact relation and type names with lbb_inspect action=ontology. SELECT and ASK only (CONSTRUCT/DESCRIBE are rejected).';
 
 export const queryInputSchema: z.ZodDiscriminatedUnion<
   "mode",
@@ -458,6 +522,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
   z
     .object({
       mode: z.literal("structured"),
+      ...queryConsistencySchema,
       body: jsonObjectSchema
         .optional()
         .describe(
@@ -493,6 +558,13 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
   z
     .object({
       mode: z.literal("sparql"),
+      ...queryConsistencySchema,
+      entailment: z
+        .enum(["none", "subclass", "rdfs", "owl"])
+        .optional()
+        .describe(
+          "Reasoning over the pinned RDF generation. Defaults to none. owl includes RDFS, inverse relationships and the supported OWL profile.",
+        ),
       query: z
         .string()
         .optional()
@@ -537,10 +609,16 @@ export const configureInputSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("define_ontology"),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          "Preview the exact definition without creating a graph or writing metadata.",
+        ),
       graph: z.string().describe("Graph to create or redefine"),
       branch: graphScope.branch,
-      entity_types: jsonObjectArraySchema.optional(),
-      relations: jsonObjectArraySchema.optional(),
+      entity_types: z.array(z.union([z.string(), jsonObjectSchema])).optional(),
+      relations: z.array(z.union([z.string(), jsonObjectSchema])).optional(),
       source: z.string().optional(),
       format: ontologyFormatSchema.optional(),
       merge_default: z.boolean().optional(),
@@ -549,6 +627,12 @@ export const configureInputSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("publish_schema"),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          "Parse and check schema compatibility without activation or validation jobs. Does not audit all data.",
+        ),
       ontology: ontologySourceSchema.optional(),
       shapes: shapeSourceSchema.optional(),
       desired_mode: schemaModeSchema.optional(),
@@ -559,6 +643,12 @@ export const configureInputSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("evolve_ontology"),
+      dry_run: z
+        .boolean()
+        .optional()
+        .describe(
+          "Preview ordered changes and current-data conflicts without writing metadata.",
+        ),
       ops: z
         .array(ontologyEvolveOpSchema)
         .min(1)
@@ -569,7 +659,7 @@ export const configureInputSchema = z.discriminatedUnion("action", [
         .boolean()
         .optional()
         .describe(
-          "Apply subtractive ops (narrow/remove) even when current data conflicts; affected records are kept and begin to warn. Default false rejects a conflicting subtractive request and reports the conflicts.",
+          "Deprecated compatibility flag; does not bypass conflicts. Preview subtractive changes with dry_run=true, repair the reported conflicts, then apply.",
         ),
       ...graphScope,
     })
