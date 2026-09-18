@@ -2,6 +2,19 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.5.0 (2026-09-18)
+
+- Return complete ontology and schema definitions with bounded, version-bound
+  pagination; add graph discovery and publication-readiness inspection.
+- Preview configuration and fact writes with `dry_run`, and expose superclass
+  changes through ontology evolution.
+- Add `lbb_rdf` for RDF document import and additive `INSERT DATA` updates.
+  RDF deletion/replacement and named graphs remain unsupported by the engine.
+- Expose query entailment, consistency, and minimum published sequence options,
+  preserving them across pagination.
+- Require `@littlebigbrain/client` 0.13.1 or newer in the 0.13.x line.
+- Report the installed package version in the MCP initialization handshake.
+
 ## 0.4.3 (2026-08-31)
 
 - Publish against the `@littlebigbrain/client` 0.13.x line, which adds the

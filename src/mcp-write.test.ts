@@ -219,7 +219,7 @@ test("lbb_configure rejects an empty schema publication", async () => {
   assert.equal(emptyPublish.isError, true);
   assert.match(
     (emptyPublish.content as { type: string; text: string }[])[0].text,
-    /ontology or shapes/,
+    /SHACL shapes source/,
   );
 
   await client.close();
