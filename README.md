@@ -69,6 +69,13 @@ missing.
 
 Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
 
+Query pages preserve complete RDF values and may contain fewer than `row_limit`
+rows to fit the 80 KB UTF-8 output budget. Follow the returned `next` arguments
+until absent; the cursor advances by rows actually delivered. A single row that
+exceeds the budget fails explicitly: project fewer fields or use the direct
+SPARQL HTTP endpoint for that row.
+
+
 Both `lbb_query` SPARQL modes (`sparql` and `structured`) support retained commit reads
 through `as_of_commit_seq`. When omitted, the connector pins the current head
 commit and reuses it for cursor pages. Valid-time `as_of` is unsupported and is
