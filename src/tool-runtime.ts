@@ -814,7 +814,20 @@ export function buildPossibilities(relations: NamedCount[]): unknown[] {
 export async function guide(
   scopedClient: LbbClient,
 ): Promise<Record<string, unknown>> {
-  const s = (await scopedClient.summary()) as {
+  let summary;
+  try {
+    summary = await scopedClient.summary();
+  } catch (error) {
+    if (!(error instanceof LbbError) || error.code !== "graph_not_found")
+      throw error;
+    return {
+      graph_exists: false,
+      graphs: await scopedClient.listGraphs(),
+      how_to:
+        "Choose an existing graph explicitly, or bootstrap the requested graph. For native named entities use lbb_configure action=define_ontology with dry_run=true, inspect warnings, then publish and lbb_commit. For RDF/OWL use lbb_rdf action=import, then SPARQL INSERT DATA for further writes; an RDF-native graph refuses property-graph commits. Native schema definition alone does not store an OWL document as graph facts.",
+    };
+  }
+  const s = summary as {
     entity_count?: number;
     current_edge_count?: number;
     observation_count?: number;
@@ -847,7 +860,7 @@ export async function guide(
       write:
         "Use lbb_commit for fact writes and relevance feedback; omitted idempotency keys are content-derived so retries dedupe. Set typed scalar attributes via entity_properties once the field is registered (add it on a live graph with lbb_configure evolve_ontology add_property). For feedback, use mode=search_feedback rather than fact triplets.",
       configure:
-        "Use lbb_configure to define a new ontology, evolve an existing one in place, or atomically publish ontology/SHACL bundle metadata. Conformance validation runs durably after publication.",
+        "Use lbb_configure dry_run=true to preview definitions, ordered evolution (including add_super_types), or SHACL publication. Definition extracts native metadata; use lbb_rdf import to store full RDF/OWL and lbb_rdf update for additive INSERT DATA; RDF deletion/replacement is unsupported. Follow every lbb_inspect ontology/schema next cursor; fields are complete and metadata changes invalidate the cursor. Publication is asynchronous: inspect action=publication, then verify asserted axioms AND expected answers with lbb_query entailment=owl. SHACL conformance alone does not prove ontology completeness. First identify the questions the model must answer, reusable vocabularies, dates, evidence, and distinctions such as hypothesis versus confirmed fact.",
     },
     possibilities: buildPossibilities(relations),
     how_to:
@@ -972,12 +985,14 @@ export function ontologyDefineBody(p: {
   source?: string;
   format?: string;
   merge_default?: boolean;
+  dry_run?: boolean;
 }): Record<string, unknown> {
   if (p.source !== undefined) {
     return {
       source: p.source,
       format: p.format ?? "auto",
       merge_default: p.merge_default ?? false,
+      ...(p.dry_run !== undefined ? { dry_run: p.dry_run } : {}),
     };
   }
   if (!p.entity_types?.length || !p.relations?.length) {
@@ -992,6 +1007,7 @@ export function ontologyDefineBody(p: {
     }),
     format: "spec",
     merge_default: p.merge_default ?? false,
+    ...(p.dry_run !== undefined ? { dry_run: p.dry_run } : {}),
   };
 }
 
