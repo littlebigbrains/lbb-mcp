@@ -24,6 +24,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_models",
     "lbb_observe",
     "lbb_query",
+    "lbb_rdf",
   ]);
 
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -81,7 +82,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "560c5205e0b55476c02be44a44dbbc7202d2578ce78e6cfcf02abc65e1c3afa0",
+    "04e6cf143366b9fd9ffa60591da5e7fe39c8bc24dbe2e0ba4cd76b2eb4dca1c2",
   );
   await client.close();
 });

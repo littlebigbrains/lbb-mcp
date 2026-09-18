@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LbbClient } from "@littlebigbrain/client";
 import { z } from "zod";
+import { metadataPage } from "./metadata-pages.js";
+import { registerRdfTool } from "./rdf-tool.js";
 import {
   IDEMPOTENT_WRITE,
   MUTATING,
@@ -41,11 +43,12 @@ import {
 } from "./tool-runtime.js";
 
 export function registerLbbTools(server: McpServer, client: LbbClient): void {
+  registerRdfTool(server, client);
   server.registerTool(
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why. schema reads active ontology/SHACL bundle metadata without running validation. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded Base-backed edge neighborhood, history, and observations. Use lbb_query with SPARQL property paths for precise path selection.",
+        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why. graphs works before bootstrap; publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded Base-backed edge neighborhood, history, and observations. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -53,19 +56,24 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
       const parsed = inspectInputSchema.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
+      if (args.action === "ontology" || args.action === "schema") {
+        return metadataPage(client, args)
+          .then(toolResult)
+          .catch(async (error) =>
+            errorResult(await enrichError(client, error)),
+          );
+      }
       return run(client, `lbb_inspect.${args.action}`, args.detail, () => {
         const target = scoped(client, args.graph, args.branch);
         switch (args.action) {
           case "guide":
             return guide(target);
-          case "ontology":
-            // Request per-relation edge counts so the listing flags which of the
-            // declared relations are actually populated (edge_count: 0 = unused).
-            return target.ontologyView({ counts: true });
+          case "graphs":
+            return target.listGraphs();
+          case "publication":
+            return target.publicationStatus();
           case "ontology_conformance":
             return target.ontologyConformance();
-          case "schema":
-            return target.schema.view();
           case "ontology_search":
             return target.ontologySearch({
               query: args.query,
@@ -172,6 +180,24 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             const branch = cursor?.branch ?? args.branch;
             const offset = cursor?.offset ?? 0;
             const target = scoped(client, graph, branch);
+            for (const key of [
+              "entailment",
+              "consistency",
+              "min_indexed_seq",
+            ] as const) {
+              if (
+                cursor &&
+                args[key] !== undefined &&
+                args[key] !== cursor[key]
+              ) {
+                throw new Error(
+                  `cursor ${key} does not match the supplied ${key}`,
+                );
+              }
+            }
+            const consistency = cursor?.consistency ?? args.consistency;
+            const minIndexedSeq =
+              cursor?.min_indexed_seq ?? args.min_indexed_seq;
 
             if (args.mode === "structured") {
               const body = (cursor?.body ?? args.body) as
@@ -196,6 +222,18 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 throw new Error(
                   "structured SPARQL valid-time selectors are not supported; use as_of_commit_seq for a retained commit snapshot, or start a new query without the valid-time selector",
                 );
+              }
+              for (const key of ["consistency", "min_indexed_seq"] as const) {
+                const requested =
+                  key === "consistency" ? consistency : minIndexedSeq;
+                if (
+                  requested !== undefined &&
+                  body[key] !== undefined &&
+                  requested !== body[key]
+                )
+                  throw new Error(
+                    `body ${key} conflicts with the query's ${key}`,
+                  );
               }
               // Resolve the top-level or body commit pin once and retain it
               // across cursor pages. The API validates its exact RDF lineage.
@@ -247,7 +285,10 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                   "`combinators` (UNION/OPTIONAL/MINUS/EXISTS) is no longer accepted by structured mode; the analytics route was removed. Express the same query as SPARQL text with mode=sparql.",
                 );
               }
-              const response = await target.sparql(request as never);
+              const response = await target.sparql(request as never, {
+                consistency,
+                minIndexedSeq,
+              });
               const rowPage = rowPageFrom(response);
               const cursorBase: Omit<QueryCursor, "offset"> = {
                 v: 1,
@@ -257,6 +298,8 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 detail,
                 row_limit: rowLimit,
                 body,
+                consistency,
+                min_indexed_seq: minIndexedSeq,
                 as_of_commit_seq: asOfCommitSeq,
               };
               const next = rowPageNext(cursorBase, rowPage);
@@ -308,12 +351,17 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               args.as_of_commit_seq,
               cursor,
             );
-            const response = await target.sparqlText({
-              query,
-              as_of_commit_seq: asOfCommitSeq ?? null,
-              limit: rowLimit,
-              offset,
-            });
+            const entailment = cursor?.entailment ?? args.entailment ?? "none";
+            const response = await target.sparqlText(
+              {
+                query,
+                entailment,
+                as_of_commit_seq: asOfCommitSeq ?? null,
+                limit: rowLimit,
+                offset,
+              },
+              { consistency, minIndexedSeq },
+            );
             const data = JSON.parse(response.results);
             const rowPage = rowPageFrom(response);
             const cursorBase: Omit<QueryCursor, "offset"> = {
@@ -324,6 +372,9 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               detail,
               row_limit: rowLimit,
               query,
+              entailment,
+              consistency,
+              min_indexed_seq: minIndexedSeq,
               as_of_commit_seq: asOfCommitSeq,
             };
             const next = rowPageNext(cursorBase, rowPage);
@@ -446,6 +497,12 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               "the commit response echoes written_properties so you can confirm what landed.",
           ),
         search_feedback: searchFeedbackSchema.optional(),
+        dry_run: z
+          .boolean()
+          .optional()
+          .describe(
+            "Validate a facts commit and return its structured SHACL report without writing. Only supported for mode=facts.",
+          ),
         observed_at: z
           .string()
           .optional()
@@ -487,6 +544,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
       entity_embeddings,
       entity_properties,
       search_feedback,
+      dry_run,
       observed_at,
       edge_idempotency,
       retract_edges,
@@ -502,6 +560,10 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             : retract_edges || retract_entities
               ? "retract"
               : "facts");
+        if (dry_run && commitMode !== "facts")
+          throw new Error(
+            "dry_run is supported only for lbb_commit mode=facts",
+          );
         if (commitMode === "retract") {
           const edges = retract_edges ?? [];
           const entities = retract_entities ?? [];
@@ -562,6 +624,8 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
         }
         const key =
           idempotency_key ?? contentHashKey({ graph, branch }, payload);
+        if (dry_run)
+          return scoped(client, graph, branch).commitDryRun(payload as never);
         return scoped(client, graph, branch).commit(payload as never, {
           idempotencyKey: key,
         });
@@ -572,7 +636,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
     "lbb_configure",
     {
       description:
-        "Mutate stored graph configuration. Actions: define_ontology, evolve_ontology, and publish_schema. Schema publication atomically activates metadata and enqueues durable conformance; it never validates the whole graph in the request.",
+        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), publish_schema (SHACL activation). All support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
       inputSchema: configureWireSchema,
       annotations: MUTATING,
     },
@@ -591,26 +655,33 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 source: args.source,
                 format: args.format,
                 merge_default: args.merge_default,
+                dry_run: args.dry_run,
               }) as never,
             );
         }
         if (args.action === "evolve_ontology") {
-          return scoped(client, args.graph, args.branch).evolveOntology({
-            ops: args.ops,
-            allow_data_conflicts: args.allow_data_conflicts ?? false,
-          } as never);
-        }
-        if (args.ontology === undefined && args.shapes === undefined) {
-          throw new Error(
-            "publish_schema requires an ontology or shapes source",
+          return scoped(client, args.graph, args.branch).ontology.evolve(
+            {
+              ops: args.ops,
+              allow_data_conflicts: args.allow_data_conflicts ?? false,
+            } as never,
+            { dryRun: args.dry_run },
           );
         }
-        return scoped(client, args.graph, args.branch).schema.publish({
-          ontology: args.ontology,
-          shapes: args.shapes,
-          desired_mode: args.desired_mode,
-          confirm_restrictive: args.confirm_restrictive,
-        } as never);
+        if (args.shapes === undefined) {
+          throw new Error(
+            "publish_schema requires a SHACL shapes source; use define_ontology or evolve_ontology for native metadata changes",
+          );
+        }
+        return scoped(client, args.graph, args.branch).schema.publish(
+          {
+            ontology: args.ontology,
+            shapes: args.shapes,
+            desired_mode: args.desired_mode,
+            confirm_restrictive: args.confirm_restrictive,
+          } as never,
+          { dryRun: args.dry_run },
+        );
       });
     },
   );
