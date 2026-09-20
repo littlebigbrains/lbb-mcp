@@ -917,11 +917,17 @@ test("lbb_query hard-cap on a partial server page points at the paging cursor", 
   const bindings = Array.from({ length: 300 }, (_, index) => ({
     s: {
       type: "literal",
-      value: `subject-with-a-long-enough-value-to-blow-the-budget-${index}`,
+      value:
+        `subject-with-a-long-enough-value-to-blow-the-budget-${index}`.repeat(
+          3,
+        ),
     },
     p: {
       type: "literal",
-      value: `predicate-with-a-long-enough-value-to-blow-the-budget-${index}`,
+      value:
+        `predicate-with-a-long-enough-value-to-blow-the-budget-${index}`.repeat(
+          3,
+        ),
     },
   }));
   const fetch: FetchLike = async (input, init) => {

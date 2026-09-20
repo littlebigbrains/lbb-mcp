@@ -70,7 +70,9 @@ missing.
 Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
 
 Query pages preserve complete RDF values and may contain fewer than `row_limit`
-rows to fit the 80 KB UTF-8 output budget. Follow the returned `next` arguments
+rows to fit the 80 KB UTF-8 text budget. Query text uses compact JSON, with the
+same complete data in `structuredContent`. The full transport response includes
+both representations and can exceed 80 KB. Follow the returned `next` arguments
 until absent; the cursor advances by rows actually delivered. A single row that
 exceeds the budget fails explicitly: project fewer fields or use the direct
 SPARQL HTTP endpoint for that row.
@@ -169,6 +171,13 @@ createMcpHttpServer({
 ```
 
 The embedded server passes a key bearer to the data plane; the hosted endpoint's OAuth and ownership layer is served separately by the Little Big Brain API.
+
+When using `buildLbbServer(client, options)` directly, `queryTextFormat: "pretty"`
+restores indented query text; the default is `"compact"`. Both formats use the
+same formatter for page sizing and rendering. Optional `timing.observe` receives
+bounded query-stage durations and counts, with no query text or RDF values.
+No logger is installed by default, including on stdio. Timing observer failures
+do not affect tool results.
 
 Full tool schemas and examples: [docs.littlebigbrain.com/sdks/mcp](https://docs.littlebigbrain.com/sdks/mcp/).
 
