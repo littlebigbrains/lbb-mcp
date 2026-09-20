@@ -3,6 +3,7 @@ import { LbbClient } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
 import { registerRdfTool } from "./rdf-tool.js";
+import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
   IDEMPOTENT_WRITE,
   MUTATING,
@@ -33,6 +34,7 @@ import {
   ontologyDefineBody,
   queryCommitPin,
   queryEnvelope,
+  queryToolResult,
   requireString,
   rowPageFrom,
   rowPageNext,
@@ -42,7 +44,11 @@ import {
   toolResult,
 } from "./tool-runtime.js";
 
-export function registerLbbTools(server: McpServer, client: LbbClient): void {
+export function registerLbbTools(
+  server: McpServer,
+  client: LbbClient,
+  options: LbbServerOptions = {},
+): void {
   registerRdfTool(server, client);
   server.registerTool(
     "lbb_inspect",
@@ -180,6 +186,62 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
             const branch = cursor?.branch ?? args.branch;
             const offset = cursor?.offset ?? 0;
             const target = scoped(client, graph, branch);
+            const timing = queryTiming(options, {
+              mode: args.mode,
+              continuation: cursor !== undefined,
+              row_limit: rowLimit,
+              offset,
+            });
+            const pin = (requested?: number) =>
+              !cursor && requested === undefined
+                ? timing.measureAsync("query_pin_metadata", () =>
+                    queryCommitPin(target, requested, cursor),
+                  )
+                : queryCommitPin(target, requested, cursor);
+            const buildEnvelope = (
+              value: unknown,
+              rowPage: ReturnType<typeof rowPageFrom>,
+              next: Record<string, unknown> | undefined,
+              cursorBase: Omit<QueryCursor, "offset">,
+              notes?: string[],
+            ) =>
+              timing.measure("query_envelope", () => {
+                timing.counts({ received_rows: rowPage?.returned });
+                const result = queryEnvelope(
+                  `lbb_query.${args.mode}`,
+                  value,
+                  detail,
+                  rowPage,
+                  next,
+                  cursorBase,
+                  { textFormat: options.queryTextFormat, notes },
+                );
+                if (options.timing) {
+                  const nextCursor = (
+                    result.next as { cursor?: unknown } | undefined
+                  )?.cursor;
+                  timing.counts({
+                    returned_rows: rowPageFrom(result)?.returned,
+                    cursor_bytes:
+                      typeof nextCursor === "string"
+                        ? Buffer.byteLength(nextCursor, "utf8")
+                        : 0,
+                  });
+                }
+                return result;
+              });
+            const render = (value: Record<string, unknown>) =>
+              timing.measure("query_render", () => {
+                const result = queryToolResult(value, options.queryTextFormat);
+                if (options.timing)
+                  timing.counts({
+                    text_bytes: Buffer.byteLength(
+                      result.content[0].text,
+                      "utf8",
+                    ),
+                  });
+                return result;
+              });
             for (const key of [
               "entailment",
               "consistency",
@@ -262,11 +324,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                   "cursor as_of_commit_seq does not match the supplied as_of_commit_seq argument",
                 );
               }
-              const asOfCommitSeq = await queryCommitPin(
-                target,
-                requestedCommitSeq,
-                cursor,
-              );
+              const asOfCommitSeq = await pin(requestedCommitSeq);
               const request: Record<string, unknown> = {
                 ...body,
                 limit: rowLimit,
@@ -285,10 +343,14 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                   "`combinators` (UNION/OPTIONAL/MINUS/EXISTS) is no longer accepted by structured mode; the analytics route was removed. Express the same query as SPARQL text with mode=sparql.",
                 );
               }
-              const response = await target.sparql(request as never, {
-                consistency,
-                minIndexedSeq,
-              });
+              const response = await timing.measureAsync(
+                "query_http_total",
+                () =>
+                  target.sparql(request as never, {
+                    consistency,
+                    minIndexedSeq,
+                  }),
+              );
               const rowPage = rowPageFrom(response);
               const cursorBase: Omit<QueryCursor, "offset"> = {
                 v: 1,
@@ -303,16 +365,7 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 as_of_commit_seq: asOfCommitSeq,
               };
               const next = rowPageNext(cursorBase, rowPage);
-              return toolResult(
-                queryEnvelope(
-                  `lbb_query.${args.mode}`,
-                  response,
-                  detail,
-                  rowPage,
-                  next,
-                  cursorBase,
-                ),
-              );
+              return render(buildEnvelope(response, rowPage, next, cursorBase));
             }
 
             // Canonicalize little big brain relation/class/property IRI local-name case up
@@ -346,23 +399,23 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
                 "cursor as_of_commit_seq does not match the supplied as_of_commit_seq argument",
               );
             }
-            const asOfCommitSeq = await queryCommitPin(
-              target,
-              args.as_of_commit_seq,
-              cursor,
-            );
+            const asOfCommitSeq = await pin(args.as_of_commit_seq);
             const entailment = cursor?.entailment ?? args.entailment ?? "none";
-            const response = await target.sparqlText(
-              {
-                query,
-                entailment,
-                as_of_commit_seq: asOfCommitSeq ?? null,
-                limit: rowLimit,
-                offset,
-              },
-              { consistency, minIndexedSeq },
+            const response = await timing.measureAsync("query_http_total", () =>
+              target.sparqlText(
+                {
+                  query,
+                  entailment,
+                  as_of_commit_seq: asOfCommitSeq ?? null,
+                  limit: rowLimit,
+                  offset,
+                },
+                { consistency, minIndexedSeq },
+              ),
             );
-            const data = JSON.parse(response.results);
+            const data = timing.measure("query_results_parse", () =>
+              JSON.parse(response.results),
+            );
             const rowPage = rowPageFrom(response);
             const cursorBase: Omit<QueryCursor, "offset"> = {
               v: 1,
@@ -378,17 +431,14 @@ export function registerLbbTools(server: McpServer, client: LbbClient): void {
               as_of_commit_seq: asOfCommitSeq,
             };
             const next = rowPageNext(cursorBase, rowPage);
-            const sparqlEnvelope = queryEnvelope(
-              `lbb_query.${args.mode}`,
+            const sparqlEnvelope = buildEnvelope(
               data,
-              detail,
               rowPage,
               next,
               cursorBase,
+              notes,
             );
-            return toolResult(
-              notes.length > 0 ? { ...sparqlEnvelope, notes } : sparqlEnvelope,
-            );
+            return render(sparqlEnvelope);
           } catch (error) {
             return errorResult(await enrichError(client, error));
           }

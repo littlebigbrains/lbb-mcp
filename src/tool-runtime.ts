@@ -426,6 +426,7 @@ export function queryEnvelope(
   rowPage?: RowPage,
   next?: Record<string, unknown>,
   repage?: Omit<QueryCursor, "offset">,
+  options: { textFormat?: "compact" | "pretty"; notes?: string[] } = {},
 ) {
   // A query page is data, not a preview: keep entire terms/values and page
   // the rows themselves to fit the wire budget. The cursor must advance by
@@ -442,7 +443,11 @@ export function queryEnvelope(
   const rows =
     key === "bindings" ? results?.bindings : key ? source[key] : undefined;
   if (!rowPage || !repage || !Array.isArray(rows)) {
-    return { ...envelope(label, value, detailArg, next), row_page: rowPage };
+    return {
+      ...envelope(label, value, detailArg, next),
+      row_page: rowPage,
+      ...(options.notes?.length ? { notes: options.notes } : {}),
+    };
   }
   if (rows.length !== rowPage.returned) {
     throw new Error(
@@ -473,12 +478,17 @@ export function queryEnvelope(
       next: hasMore
         ? continuationNext(repage, page.offset + count, repage.row_limit)
         : undefined,
+      ...(options.notes?.length ? { notes: options.notes } : {}),
     };
   };
-  // Leave room for tool-level normalization notes added by the caller. Count
-  // UTF-8 bytes, including multibyte literals, not JavaScript code units.
+  // Retain the existing reserve, but include actual normalization notes in
+  // every fit so even a large note list cannot push the final text over cap.
+  // Count UTF-8 bytes, including multibyte literals, not JavaScript code units.
   const fits = (page: Record<string, unknown>) =>
-    Buffer.byteLength(JSON.stringify(page, null, 2), "utf8") <=
+    Buffer.byteLength(
+      serializeQueryEnvelope(page, options.textFormat),
+      "utf8",
+    ) <=
     HARD_OUTPUT_CHARS - 2048;
   const full = build(rows.length);
   if (fits(full)) return full;
@@ -491,10 +501,38 @@ export function queryEnvelope(
   }
   if (lo === 0) {
     throw new Error(
-      "One query row exceeds the MCP output budget. Project fewer fields or use the SPARQL HTTP API for this value; no rows were skipped.",
+      rows.length === 0
+        ? "Query page metadata or normalization notes exceed the MCP output budget. Narrow the query or use the SPARQL HTTP API; no rows were skipped."
+        : "One query row exceeds the MCP output budget. Project fewer fields or use the SPARQL HTTP API for this value; no rows were skipped.",
     );
   }
   return build(lo);
+}
+
+/** One formatter for query page fitting and the text returned to MCP clients. */
+export function serializeQueryEnvelope(
+  value: Record<string, unknown>,
+  format: "compact" | "pretty" = "compact",
+): string {
+  return format === "pretty"
+    ? JSON.stringify(value, null, 2)
+    : JSON.stringify(value);
+}
+
+export function queryToolResult(
+  value: Record<string, unknown>,
+  format?: "compact" | "pretty",
+) {
+  const text = serializeQueryEnvelope(value, format);
+  if (Buffer.byteLength(text, "utf8") > HARD_OUTPUT_CHARS) {
+    throw new Error(
+      "Query response exceeds the MCP output budget. Narrow the query or use the SPARQL HTTP API; no rows were skipped.",
+    );
+  }
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: value,
+  };
 }
 
 export function toolResult(value: Record<string, unknown>) {

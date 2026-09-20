@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { LbbClient, type FetchLike } from "@littlebigbrain/client";
 import { buildLbbServer } from "./server.js";
+import type { LbbServerOptions } from "./query-observer.js";
 
 export type Call = {
   input: string;
@@ -12,7 +13,10 @@ export type Call = {
   };
 };
 
-export async function connect(fetch: FetchLike): Promise<Client> {
+export async function connect(
+  fetch: FetchLike,
+  options?: LbbServerOptions,
+): Promise<Client> {
   const lbb = new LbbClient({
     baseUrl: "http://h",
     apiKey: "k",
@@ -20,7 +24,7 @@ export async function connect(fetch: FetchLike): Promise<Client> {
     fetch,
     retryDelayMs: 0,
   });
-  const server = buildLbbServer(lbb);
+  const server = buildLbbServer(lbb, options);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "0" });
