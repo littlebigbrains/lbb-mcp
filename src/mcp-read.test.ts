@@ -13,6 +13,7 @@ test("SPARQL text requests match the API contract with default and explicit comm
     offset: true,
     entailment: true,
     reason: true,
+    request: true,
   };
   for (const commit of [undefined, 0, 7]) {
     const calls: Call[] = [];

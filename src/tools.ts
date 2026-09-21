@@ -409,10 +409,20 @@ export function registerLbbTools(
                   as_of_commit_seq: asOfCommitSeq ?? null,
                   limit: rowLimit,
                   offset,
+                  // Managed evals: the first page records a trace; a
+                  // continuation page re-reads the same rows and must not.
+                  ...(cursor === undefined && args.request
+                    ? { request: args.request }
+                    : {}),
                 },
                 { consistency, minIndexedSeq },
               ),
             );
+            if (response.trace_id) {
+              notes.push(
+                `eval trace ${response.trace_id}: when the user confirms these rows answer the request, call lbb_evals action=label trace_id=${response.trace_id} valid=true (valid=false otherwise).`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
@@ -497,6 +507,113 @@ export function registerLbbTools(
             return target.suggestDataset({ limit, splitSeq: split_seq });
           case "extractor_dataset":
             return target.extractorDataset({ limit, splitSeq: split_seq });
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_evals",
+    {
+      description:
+        "Managed evals: the thumbs up / thumbs down of the graph. label marks a trace (from lbb_query with `request`) valid or not; a valid label freezes the query and its rows as a golden. golden freezes a query directly. run replays every golden at the current commit and reports pass/fail/accepted. judge lets the platform's judge model label unlabeled traces. summary, traces, goldens, results, and settings read state.",
+      inputSchema: {
+        action: z.enum([
+          "summary",
+          "traces",
+          "label",
+          "judge",
+          "goldens",
+          "golden",
+          "accept",
+          "delete",
+          "run",
+          "results",
+          "settings",
+        ]),
+        trace_id: z
+          .string()
+          .optional()
+          .describe("label / judge: the trace id from lbb_query."),
+        valid: z
+          .boolean()
+          .optional()
+          .describe("label: true = the rows answered the request (thumbs up)."),
+        by: z
+          .string()
+          .optional()
+          .describe("label: who labels (an agent name)."),
+        note: z.string().optional(),
+        sparql: z.string().optional().describe("golden: the query to freeze."),
+        request: z
+          .string()
+          .optional()
+          .describe("golden: the user's words the query answers."),
+        golden_id: z
+          .string()
+          .optional()
+          .describe("accept / delete: the golden id."),
+        limit: z.number().int().positive().optional(),
+        unlabeled: z
+          .boolean()
+          .optional()
+          .describe("traces: only traces without a label."),
+        consistency: z
+          .enum(["strong", "eventual"])
+          .optional()
+          .describe(
+            "run / accept: strong reads the head, eventual the last published commit.",
+          ),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    ({
+      action,
+      trace_id,
+      valid,
+      by,
+      note,
+      sparql,
+      request,
+      golden_id,
+      limit,
+      unlabeled,
+      consistency,
+      detail,
+      graph,
+      branch,
+    }) =>
+      run(client, `lbb_evals.${action}`, detail, () => {
+        const target = scoped(client, graph, branch);
+        switch (action) {
+          case "summary":
+            return target.evals.summary();
+          case "traces":
+            return target.evals.traces({ limit, unlabeled });
+          case "label":
+            if (!trace_id) throw new Error("label requires trace_id");
+            if (valid === undefined) throw new Error("label requires valid");
+            return target.evals.label(trace_id, { valid, by, note });
+          case "judge":
+            return target.evals.judge({ traceId: trace_id, limit });
+          case "goldens":
+            return target.evals.goldens();
+          case "golden":
+            if (!sparql) throw new Error("golden requires sparql");
+            return target.evals.createGolden({ sparql, request });
+          case "accept":
+            if (!golden_id) throw new Error("accept requires golden_id");
+            return target.evals.acceptGolden(golden_id, { consistency });
+          case "delete":
+            if (!golden_id) throw new Error("delete requires golden_id");
+            return target.evals.deleteGolden(golden_id);
+          case "run":
+            return target.evals.run({ consistency });
+          case "results":
+            return target.evals.results({ limit });
+          case "settings":
+            return target.evals.settings();
         }
       }),
   );

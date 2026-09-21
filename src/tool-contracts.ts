@@ -584,6 +584,12 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .describe(
           "Snapshot pin: run the query as of this commit_seq. Errors if past head.",
         ),
+      request: z
+        .string()
+        .optional()
+        .describe(
+          "The user's own words behind this query (managed evals). When present the server records an eval trace and the result carries its trace_id; label the rows valid or not with lbb_evals action=label. Omit on continuation pages.",
+        ),
       row_limit: rowLimitSchema,
       cursor: cursorSchema,
       ...readScope,

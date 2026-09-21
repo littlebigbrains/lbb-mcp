@@ -21,6 +21,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_branch",
     "lbb_commit",
     "lbb_configure",
+    "lbb_evals",
     "lbb_inspect",
     "lbb_models",
     "lbb_observe",
@@ -86,7 +87,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "04e6cf143366b9fd9ffa60591da5e7fe39c8bc24dbe2e0ba4cd76b2eb4dca1c2",
+    "efb37e425c1ad298ccba26eabddceef3d1a4cb86ee028b2776add62fc32647ba",
   );
   await client.close();
 });
