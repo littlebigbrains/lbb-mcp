@@ -38,6 +38,12 @@ export const MUTATING = {
   destructiveHint: false,
   openWorldHint: false,
 } as const;
+export const DESTRUCTIVE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
 
 export const detailSchema = z
   .enum(["compact", "standard", "full"])
@@ -584,8 +590,92 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .describe(
           "Snapshot pin: run the query as of this commit_seq. Errors if past head.",
         ),
+      request: z
+        .string()
+        .optional()
+        .describe(
+          "The user's own words behind this query (managed evals). When present the server records an eval trace and the result carries its trace_id; label the rows valid or not with lbb_evals action=label. Omit on continuation pages.",
+        ),
       row_limit: rowLimitSchema,
       cursor: cursorSchema,
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("search"),
+      embedding: z
+        .string()
+        .optional()
+        .describe(
+          "One embedding by name (see lbb_embeddings action=list). Omit it to search every searchable class of the graph; each hit names its class.",
+        ),
+      text: z
+        .string()
+        .optional()
+        .describe(
+          "The query text (required); embedded with the graph's model.",
+        ),
+      top_k: z.number().int().positive().max(200).optional(),
+      probe: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Clusters to read (default 4·√clusters, at least 8). More reads cost latency and find more.",
+        ),
+      include: z
+        .array(z.enum(["text"]))
+        .optional()
+        .describe("text: return the embedded text of each hit."),
+      filter: z
+        .array(
+          z
+            .object({
+              class: z
+                .union([z.string(), z.array(z.string())])
+                .optional()
+                .describe(
+                  "A class condition: one class IRI or a list (any of); subclasses too. One class condition per search.",
+                ),
+              via: z
+                .string()
+                .optional()
+                .describe(
+                  "A relationship condition: the relationship, a local name (calls), prefix:name, or <iri>.",
+                ),
+              to: z
+                .union([z.string(), z.array(z.string())])
+                .optional()
+                .describe(
+                  "With via: the entity, an IRI or a name (its label; a spelling slip resolves when one entity is clearly closest), or a list (any of).",
+                ),
+              direction: z
+                .enum(["out", "in"])
+                .optional()
+                .describe(
+                  "With via: out (default), the hit links to the entity; in, the entity links to the hit.",
+                ),
+            })
+            .strict(),
+        )
+        .optional()
+        .describe(
+          'Conditions every hit must meet: {"class": …} or {"via": …, "to": …}. The response\'s filter shows how each condition resolved; an unknown relationship or name answers with the options.',
+        ),
+      explain: z
+        .boolean()
+        .optional()
+        .describe(
+          "Plan without running: the scope, the resolved filter, and the allowed count. No model call.",
+        ),
+      request: z
+        .string()
+        .optional()
+        .describe(
+          "The user's own words (managed evals): records an eval trace; label it with lbb_evals action=label.",
+        ),
       ...readScope,
     })
     .strict(),

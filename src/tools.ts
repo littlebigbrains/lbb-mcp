@@ -5,6 +5,7 @@ import { metadataPage } from "./metadata-pages.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
+  DESTRUCTIVE,
   IDEMPOTENT_WRITE,
   MUTATING,
   READ_ONLY,
@@ -149,7 +150,7 @@ export function registerLbbTools(
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), analyze. SPARQL is the only query surface. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), search (the instances of a class by meaning, from its embedding, every hit checked against the graph; set up embeddings with lbb_embeddings), analyze. SPARQL is the query language; search finds the instances of a class by meaning. Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -409,10 +410,20 @@ export function registerLbbTools(
                   as_of_commit_seq: asOfCommitSeq ?? null,
                   limit: rowLimit,
                   offset,
+                  // Managed evals: the first page records a trace; a
+                  // continuation page re-reads the same rows and must not.
+                  ...(cursor === undefined && args.request
+                    ? { request: args.request }
+                    : {}),
                 },
                 { consistency, minIndexedSeq },
               ),
             );
+            if (response.trace_id) {
+              notes.push(
+                `eval trace ${response.trace_id}: to label rows, read their item ids with lbb_evals action=trace trace_id=${response.trace_id}, then call lbb_evals action=label trace_id=${response.trace_id} item=<id> valid=true|false (or items=[…]).`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
@@ -443,6 +454,22 @@ export function registerLbbTools(
             return errorResult(await enrichError(client, error));
           }
         })();
+      }
+      if (args.mode === "search") {
+        const searchArgs = args;
+        return run(client, "lbb_query.search", undefined, async () => {
+          const target = scoped(client, searchArgs.graph, searchArgs.branch);
+          return target.embeddings.search({
+            embedding: searchArgs.embedding,
+            text: searchArgs.text,
+            top_k: searchArgs.top_k,
+            probe: searchArgs.probe,
+            include: searchArgs.include,
+            request: searchArgs.request,
+            filter: searchArgs.filter,
+            explain: searchArgs.explain,
+          });
+        });
       }
       return run(client, `lbb_query.${args.mode}`, args.detail, async () => {
         const target = scoped(client, args.graph, args.branch);
@@ -497,6 +524,315 @@ export function registerLbbTools(
             return target.suggestDataset({ limit, splitSeq: split_seq });
           case "extractor_dataset":
             return target.extractorDataset({ limit, splitSeq: split_seq });
+        }
+      }),
+  );
+
+  const embeddingSetup = {
+    class: z.string().optional().describe("preview/declare: the class IRI."),
+    from: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'preview/declare: the fields, e.g. ["label", "description", "calls/label"]. Omit for the automatic choice; on an existing embedding, omit to keep its fields.',
+      ),
+    exclude: z
+      .array(z.string())
+      .optional()
+      .describe("preview/declare: fields to drop from the automatic choice."),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        "model: the graph's new model. preview/declare: omit it; a graph has one model (the graph's, or the platform's default for the first embedding).",
+      ),
+    dim: z.number().int().positive().optional(),
+  };
+  const recipeOf = (args: {
+    class?: string;
+    name?: string;
+    from?: string[];
+    exclude?: string[];
+    model?: string;
+    dim?: number;
+  }) => {
+    if (!args.class) throw new Error("this action requires class");
+    return {
+      class: args.class,
+      ...(args.name ? { name: args.name } : {}),
+      ...(args.from ? { from: args.from } : {}),
+      ...(args.exclude ? { exclude: args.exclude } : {}),
+      ...(args.model ? { model: args.model } : {}),
+      ...(args.dim ? { dim: args.dim } : {}),
+    };
+  };
+
+  server.registerTool(
+    "lbb_embeddings",
+    {
+      description:
+        "Search setup, read only: embeddings declared on classes (an embedding on a class covers its subclasses; one model per graph). list shows each embedding's status (serving and building version, backfill progress, lag) and the graph's model; get shows one; preview shows every candidate fact of a class with its coverage and examples, and the exact text of sample instances, and stores nothing. Declare, refresh, or change the model with lbb_embeddings_manage; search with lbb_query mode=search.",
+      inputSchema: {
+        action: z.enum(["list", "get", "preview"]),
+        name: z.string().optional().describe("get: the embedding name."),
+        ...embeddingSetup,
+        sample: z.number().int().positive().max(50).optional(),
+        iris: z
+          .array(z.string())
+          .optional()
+          .describe("preview: the instances to show instead of a sample."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: READ_ONLY,
+    },
+    (args) =>
+      run(client, `lbb_embeddings.${args.action}`, args.detail, () => {
+        const target = scoped(client, args.graph, args.branch);
+        switch (args.action) {
+          case "list":
+            return target.embeddings.list();
+          case "get":
+            if (!args.name) throw new Error("get requires name");
+            return target.embeddings.get(args.name);
+          case "preview":
+            return target.embeddings.preview({
+              ...recipeOf(args),
+              ...(args.sample ? { sample: args.sample } : {}),
+              ...(args.iris ? { iris: args.iris } : {}),
+            } as never);
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_embeddings_manage",
+    {
+      description:
+        "Declare or refresh an embedding, or change the graph's model. Run lbb_embeddings action=preview first and show the user the text it will embed. declare sets the class, the fields (one-hop property paths such as label, description, calls/label; omit for an automatic choice); a new embedding takes the graph's model, and another model is refused. On an existing embedding it changes only what you name, and a changed recipe builds a new version while the old one serves. model moves every embedding of the graph to `model`: each builds a new version, and the graph switches when all are ready (a search never mixes two models). refresh runs one step of the embed job now (it also runs by itself after each published commit).",
+      inputSchema: {
+        action: z.enum(["declare", "refresh", "model"]),
+        name: z
+          .string()
+          .optional()
+          .describe("The embedding name (refresh: required)."),
+        ...embeddingSetup,
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    (args) =>
+      run(client, `lbb_embeddings_manage.${args.action}`, args.detail, () => {
+        const target = scoped(client, args.graph, args.branch);
+        switch (args.action) {
+          case "declare":
+            return target.embeddings.declare(recipeOf(args) as never);
+          case "refresh":
+            if (!args.name) throw new Error("refresh requires name");
+            return target.embeddings.refresh(args.name);
+          case "model":
+            if (!args.model) throw new Error("model requires model");
+            return target.embeddings.setModel({
+              model: args.model,
+              ...(args.dim ? { dim: args.dim } : {}),
+            });
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_embeddings_delete",
+    {
+      description:
+        "Delete an embedding: its name and its vectors (index-gc removes the stored runs). Its class stops being searchable until it is declared and built again. Ask the user first; confirm must repeat the name.",
+      inputSchema: {
+        name: z.string().describe("The embedding name."),
+        confirm: z.string().describe("The same name again, to confirm."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: DESTRUCTIVE,
+    },
+    ({ name, confirm, detail, graph, branch }) =>
+      run(client, "lbb_embeddings_delete", detail, () => {
+        if (confirm !== name) {
+          throw new Error("confirm must repeat the embedding name");
+        }
+        return scoped(client, graph, branch).embeddings.delete(name);
+      }),
+  );
+
+  server.registerTool(
+    "lbb_evals",
+    {
+      description:
+        "Managed evals: the thumbs up / thumbs down of the graph, per result. A query run with `request` (lbb_query) records a trace with one item per result (hit or row); trace reads it back with the item ids. label marks one result (item + valid) or several (items) relevant or not; the labels become the golden's ground truth. golden freezes a query (every result it returns now is relevant). run replays every golden at the current commit: pass when every relevant result is back and no wrong one is; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state.",
+      inputSchema: {
+        action: z.enum([
+          "summary",
+          "traces",
+          "trace",
+          "label",
+          "judge",
+          "goldens",
+          "golden",
+          "accept",
+          "delete",
+          "run",
+          "results",
+          "settings",
+        ]),
+        trace_id: z
+          .string()
+          .optional()
+          .describe("trace / label / judge: the trace id from lbb_query."),
+        item: z
+          .string()
+          .optional()
+          .describe(
+            "label: the result id (a hit's `id`, or an item id from trace) to label with `valid`.",
+          ),
+        valid: z
+          .boolean()
+          .optional()
+          .describe(
+            "label: true = the result answers the request (thumbs up), false = it does not.",
+          ),
+        items: z
+          .array(
+            z
+              .object({
+                id: z.string(),
+                valid: z.boolean(),
+                note: z.string().optional(),
+              })
+              .strict(),
+          )
+          .optional()
+          .describe("label: several results at once."),
+        by: z
+          .string()
+          .optional()
+          .describe("label: who labels (an agent name)."),
+        note: z.string().optional(),
+        sparql: z
+          .string()
+          .optional()
+          .describe(
+            "golden: the query to freeze (the search text for surface=search).",
+          ),
+        surface: z
+          .enum(["sparql", "search"])
+          .optional()
+          .describe(
+            "golden: which surface the query runs on (default sparql).",
+          ),
+        embedding: z
+          .string()
+          .optional()
+          .describe("golden: the embedding, for surface=search."),
+        top_k: z
+          .number()
+          .int()
+          .positive()
+          .max(200)
+          .optional()
+          .describe("golden: the top_k of a search golden."),
+        request: z
+          .string()
+          .optional()
+          .describe("golden: the user's words the query answers."),
+        golden_id: z
+          .string()
+          .optional()
+          .describe("accept / delete: the golden id."),
+        limit: z.number().int().positive().optional(),
+        unlabeled: z
+          .boolean()
+          .optional()
+          .describe("traces: only traces without a label."),
+        consistency: z
+          .enum(["strong", "eventual"])
+          .optional()
+          .describe(
+            "run / accept: strong reads the head, eventual the last published commit.",
+          ),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    ({
+      action,
+      trace_id,
+      item,
+      valid,
+      items,
+      by,
+      note,
+      sparql,
+      surface,
+      embedding,
+      top_k,
+      request,
+      golden_id,
+      limit,
+      unlabeled,
+      consistency,
+      detail,
+      graph,
+      branch,
+    }) =>
+      run(client, `lbb_evals.${action}`, detail, () => {
+        const target = scoped(client, graph, branch);
+        switch (action) {
+          case "summary":
+            return target.evals.summary();
+          case "traces":
+            return target.evals.traces({ limit, unlabeled });
+          case "trace":
+            if (!trace_id) throw new Error("trace requires trace_id");
+            return target.evals.trace(trace_id);
+          case "label":
+            if (!trace_id) throw new Error("label requires trace_id");
+            if (!item && !items?.length)
+              throw new Error("label requires item (with valid) or items");
+            if (item && valid === undefined)
+              throw new Error("label requires valid with item");
+            return target.evals.label(trace_id, {
+              ...(item ? { item, valid } : {}),
+              ...(items?.length ? { items } : {}),
+              by,
+              note,
+            });
+          case "judge":
+            return target.evals.judge({ traceId: trace_id, limit });
+          case "goldens":
+            return target.evals.goldens();
+          case "golden":
+            if (!sparql) throw new Error("golden requires sparql");
+            if (surface === "search" && !embedding)
+              throw new Error("a search golden requires embedding");
+            return target.evals.createGolden({
+              sparql,
+              request,
+              ...(surface ? { surface } : {}),
+              ...(embedding ? { embedding } : {}),
+              ...(top_k ? { top_k } : {}),
+            });
+          case "accept":
+            if (!golden_id) throw new Error("accept requires golden_id");
+            return target.evals.acceptGolden(golden_id, { consistency });
+          case "delete":
+            if (!golden_id) throw new Error("delete requires golden_id");
+            return target.evals.deleteGolden(golden_id);
+          case "run":
+            return target.evals.run({ consistency });
+          case "results":
+            return target.evals.results({ limit });
+          case "settings":
+            return target.evals.settings();
         }
       }),
   );
