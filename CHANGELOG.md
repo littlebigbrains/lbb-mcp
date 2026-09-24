@@ -4,11 +4,14 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## Unreleased
 
-Breaking removal of branches and observe. Every graph has one line of history.
+Breaking removal of branches, observe, and planner training. Every graph has
+one line of history.
 
 - Remove the `branch` argument from every tool, `LBB_BRANCH` from the stdio
   server, and `?branch=` from the HTTP server. Tools are scoped by graph only.
 - Remove the `lbb_branch` and `lbb_observe` tools.
+- Remove the `planner_dataset` and `planner_preference_dataset` actions from
+  `lbb_models`. The server no longer trains the planner.
 
 ## 0.5.2 (2026-09-24)
 
