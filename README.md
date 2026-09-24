@@ -60,7 +60,10 @@ missing.
 | --- | --- |
 | `lbb_inspect` | graph discovery, complete paginated ontology/schema, publication status, entity, state, history, and provenance |
 | `lbb_rdf` | import full RDF/OWL or add axioms using INSERT DATA |
-| `lbb_query` | SPARQL text, structured SPARQL bodies, and canned analysis |
+| `lbb_query` | SPARQL text, structured SPARQL bodies, search by meaning (`mode=search`), and canned analysis |
+| `lbb_embeddings` | search setup, read only: list and inspect embeddings, preview the text and cost of embedding a class |
+| `lbb_embeddings_manage` | declare or refresh an embedding (spends model tokens) |
+| `lbb_embeddings_delete` | delete an embedding and its vectors (asks for the name twice) |
 | `lbb_commit` | facts, properties, and embeddings |
 | `lbb_observe` | conversation episodes plus reviewed extraction |
 | `lbb_branch` | isolation branches and validated merge |

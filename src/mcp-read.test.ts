@@ -13,6 +13,7 @@ test("SPARQL text requests match the API contract with default and explicit comm
     offset: true,
     entailment: true,
     reason: true,
+    request: true,
   };
   for (const commit of [undefined, 0, 7]) {
     const calls: Call[] = [];
@@ -164,11 +165,15 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, and wh
   });
   assert.match(calls[0].input, /\/v1\/graph\/summary\?/);
   const guideBody = payload(guide).data as {
-    capability: { search_feedback?: string };
+    capability: { search_feedback?: string; search?: string };
     how_to: string;
     possibilities: { run: { tool: string } }[];
   };
   assert.ok(guideBody.possibilities.every((p) => p.run.tool === "lbb_query"));
+  // The search planning recipe: list, SPARQL on a sample, explain.
+  assert.match(guideBody.capability.search ?? "", /lbb_embeddings action=list/);
+  assert.match(guideBody.capability.search ?? "", /LIMIT 500/);
+  assert.match(guideBody.capability.search ?? "", /explain=true/);
   assert.match(guideBody.capability.search_feedback ?? "", /grade 3/);
   assert.match(guideBody.capability.search_feedback ?? "", /grade 1/);
   assert.match(guideBody.capability.search_feedback ?? "", /grade 0/);
@@ -1162,6 +1167,132 @@ test("byte-bounded query pages preserve every long Unicode value at nonzero offs
       args = body.next;
     }
     assert.deepEqual(seen, rows);
+  } finally {
+    await client.close();
+  }
+});
+
+test("search tools route to the embeddings and search API", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ embeddings: [], hits: [] });
+  });
+  const last = () => {
+    const call = calls.at(-1);
+    return {
+      method: call?.init.method ?? "GET",
+      url: call?.input ?? "",
+      body: JSON.parse(call?.init.body ?? "{}") as Record<string, unknown>,
+    };
+  };
+  const service = "https://x.test/class/service";
+  try {
+    // Read only: list, get, preview.
+    await client.callTool({
+      name: "lbb_embeddings",
+      arguments: { action: "list" },
+    });
+    assert.match(last().url, /\/v1\/embeddings\?/);
+    await client.callTool({
+      name: "lbb_embeddings",
+      arguments: { action: "get", name: "service" },
+    });
+    assert.match(last().url, /name=service/);
+    const noName = await client.callTool({
+      name: "lbb_embeddings",
+      arguments: { action: "get" },
+    });
+    assert.equal(noName.isError, true);
+    await client.callTool({
+      name: "lbb_embeddings",
+      arguments: {
+        action: "preview",
+        class: service,
+        from: ["label"],
+        sample: 2,
+      },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/embeddings\/preview/);
+    assert.deepEqual(last().body.from, ["label"]);
+    assert.equal(last().body.sample, 2);
+
+    // Manage: declare, refresh, and the graph's model.
+    await client.callTool({
+      name: "lbb_embeddings_manage",
+      arguments: {
+        action: "declare",
+        class: service,
+        from: ["label", "calls/label"],
+      },
+    });
+    assert.equal(last().method, "PUT");
+    assert.equal(last().body.class, service);
+    await client.callTool({
+      name: "lbb_embeddings_manage",
+      arguments: { action: "refresh", name: "service" },
+    });
+    assert.match(last().url, /\/v1\/embeddings\/refresh\?.*name=service/);
+    const noRefreshName = await client.callTool({
+      name: "lbb_embeddings_manage",
+      arguments: { action: "refresh" },
+    });
+    assert.equal(noRefreshName.isError, true);
+    await client.callTool({
+      name: "lbb_embeddings_manage",
+      arguments: {
+        action: "model",
+        model: "openai/text-embedding-3-large",
+        dim: 3072,
+      },
+    });
+    assert.equal(last().method, "PUT");
+    assert.match(last().url, /\/v1\/embeddings\/model/);
+    assert.deepEqual(last().body, {
+      model: "openai/text-embedding-3-large",
+      dim: 3072,
+    });
+    const noModel = await client.callTool({
+      name: "lbb_embeddings_manage",
+      arguments: { action: "model" },
+    });
+    assert.equal(noModel.isError, true);
+
+    // Delete asks for the name twice.
+    const before = calls.length;
+    const mismatch = await client.callTool({
+      name: "lbb_embeddings_delete",
+      arguments: { name: "service", confirm: "other" },
+    });
+    assert.equal(mismatch.isError, true);
+    assert.equal(calls.length, before, "no request without the confirmation");
+    await client.callTool({
+      name: "lbb_embeddings_delete",
+      arguments: { name: "service", confirm: "service" },
+    });
+    assert.equal(last().method, "DELETE");
+    assert.match(last().url, /confirm=service/);
+
+    // Search with one filter list and a plan.
+    await client.callTool({
+      name: "lbb_query",
+      arguments: {
+        mode: "search",
+        text: "fraud checks",
+        filter: [
+          { class: service },
+          { via: "calls", to: "payment-service", direction: "out" },
+        ],
+        explain: true,
+      },
+    });
+    assert.match(last().url, /\/v1\/search/);
+    assert.deepEqual(last().body.filter, [
+      { class: service },
+      { via: "calls", to: "payment-service", direction: "out" },
+    ]);
+    assert.equal(last().body.explain, true);
   } finally {
     await client.close();
   }
