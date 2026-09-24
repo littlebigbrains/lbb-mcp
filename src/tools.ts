@@ -485,13 +485,7 @@ export function registerLbbTools(
       description:
         "Read model-training inputs or compare retrieval configurations over one pinned published snapshot. shadow_eval takes the API ShadowEvalRequest body; dataset actions return bounded training examples at an optional signal split.",
       inputSchema: {
-        action: z.enum([
-          "shadow_eval",
-          "planner_dataset",
-          "planner_preference_dataset",
-          "suggest_dataset",
-          "extractor_dataset",
-        ]),
+        action: z.enum(["shadow_eval", "suggest_dataset", "extractor_dataset"]),
         body: jsonObjectSchema.optional(),
         limit: z.number().int().positive().optional(),
         split_seq: z.number().int().nonnegative().optional(),
@@ -507,13 +501,6 @@ export function registerLbbTools(
           case "shadow_eval":
             if (!body) throw new Error("shadow_eval requires body");
             return target.shadowEval(body as never);
-          case "planner_dataset":
-            return target.plannerDataset({ limit, splitSeq: split_seq });
-          case "planner_preference_dataset":
-            return target.plannerPreferenceDataset({
-              limit,
-              splitSeq: split_seq,
-            });
           case "suggest_dataset":
             return target.suggestDataset({ limit, splitSeq: split_seq });
           case "extractor_dataset":

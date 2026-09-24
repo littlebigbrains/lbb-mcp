@@ -124,7 +124,7 @@ test("lbb_models preserves published-root APIs", async () => {
   await client.callTool({
     name: "lbb_models",
     arguments: {
-      action: "planner_dataset",
+      action: "extractor_dataset",
       limit: 10,
       split_seq: 7,
     },
@@ -135,7 +135,7 @@ test("lbb_models preserves published-root APIs", async () => {
   });
 
   assert.match(calls[0].input, /\/v1\/models\/shadow-eval\?/);
-  assert.match(calls[1].input, /\/v1\/models\/planner-dataset\?/);
+  assert.match(calls[1].input, /\/v1\/models\/extractor-dataset\?/);
   assert.match(calls[1].input, /limit=10/);
   assert.match(calls[1].input, /split_seq=7/);
   assert.match(calls[2].input, /\/v1\/schema\?/);
