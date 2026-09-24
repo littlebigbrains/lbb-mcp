@@ -131,7 +131,7 @@ test("lbb_models preserves published-root APIs", async () => {
   });
   await client.callTool({
     name: "lbb_inspect",
-    arguments: { action: "schema", branch: "draft" },
+    arguments: { action: "schema", graph: "draft" },
   });
 
   assert.match(calls[0].input, /\/v1\/models\/shadow-eval\?/);
@@ -139,7 +139,7 @@ test("lbb_models preserves published-root APIs", async () => {
   assert.match(calls[1].input, /limit=10/);
   assert.match(calls[1].input, /split_seq=7/);
   assert.match(calls[2].input, /\/v1\/schema\?/);
-  assert.match(calls[2].input, /branch=draft/);
+  assert.match(calls[2].input, /graph=draft/);
   await client.close();
 });
 

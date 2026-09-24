@@ -144,7 +144,7 @@ test("HTTP edge redacts unexpected internal errors", async () => {
     },
   });
   try {
-    const response = await call("/mcp?graph=research&branch=review", {
+    const response = await call("/mcp?graph=research", {
       method: "POST",
       headers: {
         authorization: "Bearer secret",
@@ -165,7 +165,6 @@ test("HTTP edge redacts unexpected internal errors", async () => {
       baseUrl: TEST_BASE_URL,
       apiKey: "secret",
       graph: "research",
-      branch: "review",
     });
   } finally {
     await close(server);

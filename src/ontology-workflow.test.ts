@@ -200,7 +200,6 @@ test("RDF import and edits preserve OWL text, scope and retry identity through M
         arguments: {
           action: "import",
           graph: "crm",
-          branch: "draft",
           format: "turtle",
           source,
           detail,
@@ -215,7 +214,7 @@ test("RDF import and edits preserve OWL text, scope and retry identity through M
       calls[1].init.headers?.["idempotency-key"],
     );
     assert.equal(new URL(calls[0].input).searchParams.get("graph_uri"), null);
-    assert.equal(new URL(calls[0].input).searchParams.get("branch"), "draft");
+    assert.equal(new URL(calls[0].input).searchParams.get("graph"), "crm");
     const update =
       'INSERT DATA { <urn:Person> <http://www.w3.org/2000/01/rdf-schema#label> "Person" }';
     const result = await client.callTool({

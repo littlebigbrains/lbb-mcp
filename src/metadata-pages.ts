@@ -7,14 +7,12 @@ import { countsFor, stableJson } from "./tool-runtime.js";
 type Request = z.infer<z.ZodObject<typeof metadataPageSchema>> & {
   action: "ontology" | "schema";
   graph?: string;
-  branch?: string;
 };
 const cursorSchema = z
   .object({
     v: z.literal(1),
     action: z.enum(["ontology", "schema"]),
     graph: z.string().optional(),
-    branch: z.string().optional(),
     section: z.string().optional(),
     page_size: z.number().int().min(1).max(500),
     offset: z.number().int().nonnegative().safe(),
@@ -36,23 +34,16 @@ export async function metadataPage(client: LbbClient, args: Request) {
     } catch {
       throw new Error("invalid lbb_inspect cursor; restart without cursor");
     }
-    for (const key of [
-      "action",
-      "graph",
-      "branch",
-      "section",
-      "page_size",
-    ] as const) {
+    for (const key of ["action", "graph", "section", "page_size"] as const) {
       if (args[key] !== undefined && args[key] !== cursor[key]) {
         throw new Error(`cursor ${key} does not match the supplied ${key}`);
       }
     }
   }
   const graph = cursor?.graph ?? args.graph;
-  const branch = cursor?.branch ?? args.branch;
   const section = cursor?.section ?? args.section;
   const pageSize = cursor?.page_size ?? args.page_size ?? 50;
-  const target = client.withScope({ graph, branch });
+  const target = client.withScope({ graph });
   const value = (args.action === "ontology"
     ? await target.ontologyView({ counts: true })
     : await target.schema.view()) as unknown as Record<string, unknown>;
@@ -75,7 +66,6 @@ export async function metadataPage(client: LbbClient, args: Request) {
     v: 1 as const,
     action: args.action,
     graph,
-    branch,
     section,
     page_size: pageSize,
     fingerprint,
@@ -113,7 +103,6 @@ export async function metadataPage(client: LbbClient, args: Request) {
         ? {
             action: args.action,
             graph,
-            branch,
             section,
             page_size: pageSize,
             cursor: Buffer.from(

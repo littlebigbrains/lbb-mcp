@@ -25,7 +25,6 @@ test("lbb_configure defines ontologies and atomically publishes schemas", async 
     arguments: {
       action: "publish_schema",
       graph: "support",
-      branch: "draft",
       shapes: {
         source: "@prefix sh: <http://www.w3.org/ns/shacl#> .",
         format: "turtle",
@@ -46,7 +45,6 @@ test("lbb_configure defines ontologies and atomically publishes schemas", async 
   );
   assert.match(calls[1].input, /\/v1\/schema\/publish\?/);
   assert.match(calls[1].input, /graph=support/);
-  assert.match(calls[1].input, /branch=draft/);
   const schemaBody = JSON.parse(calls[1].init.body ?? "{}");
   assert.equal(schemaBody.desired_mode, "warn");
   assert.match(schemaBody.shapes.source, /shacl/);
@@ -225,98 +223,6 @@ test("lbb_configure rejects an empty schema publication", async () => {
   await client.close();
 });
 
-test("lbb_branch merge posts the WS16 merge with an idempotency key", async () => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({
-      merged: true,
-      commits_applied: 1,
-      snapshot: { commit_seq: 3, indexed_seq: 0 },
-    });
-  };
-  const client = await connect(fetch);
-  await client.callTool({
-    name: "lbb_branch",
-    arguments: { action: "merge", from_branch: "scratch", delete_source: true },
-  });
-  assert.match(calls[0].input, /\/v1\/graph\/branch\/merge\?/);
-  const body = JSON.parse(String(calls[0].init.body));
-  assert.equal(body.from_branch, "scratch");
-  assert.equal(body.validate, true);
-  assert.equal(body.delete_source, true);
-  const headers = calls[0].init.headers as Record<string, string>;
-  assert.ok(
-    headers["idempotency-key"],
-    "merge is a write and must carry a key",
-  );
-
-  const forkCalls: Call[] = [];
-  const forkFetch: FetchLike = async (input, init) => {
-    forkCalls.push({ input, init: init ?? {} });
-    return ok({ graph: {}, parent: {}, snapshot: {} });
-  };
-  const forker = await connect(forkFetch);
-  await forker.callTool({
-    name: "lbb_branch",
-    arguments: { action: "create", from_branch: "main", branch: "scratch" },
-  });
-  assert.match(forkCalls[0].input, /\/v1\/graph\/branch\?/);
-  assert.match(forkCalls[0].input, /branch=scratch/);
-  assert.equal(JSON.parse(String(forkCalls[0].init.body)).from_branch, "main");
-  await forker.close();
-  await client.close();
-});
-
-test("lbb_observe posts the episode + facts with an idempotency key", async () => {
-  const calls: Call[] = [];
-  const fetch: FetchLike = async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({
-      episode_id: "abc",
-      branch: "observe-x",
-      facts: [],
-      merged: false,
-      snapshot: {},
-    });
-  };
-  const client = await connect(fetch);
-  await client.callTool({
-    name: "lbb_observe",
-    arguments: {
-      session_id: "sess-1",
-      turns: [{ role: "user", content: "remember: svc-b depends on svc-c" }],
-      facts: [
-        {
-          fact: "svc-b depends on svc-c",
-          confidence: 0.9,
-          triplet: {
-            source: { type: "SERVICE", name: "svc-b" },
-            relation: "DEPENDS_ON",
-            target: { type: "SERVICE", name: "svc-c" },
-          },
-        },
-      ],
-      auto_merge: true,
-    },
-  });
-  assert.match(calls[0].input, /\/v1\/memory\/observe\?/);
-  const body = JSON.parse(String(calls[0].init.body));
-  assert.equal(body.episode.session_id, "sess-1");
-  assert.equal(body.episode.turns.length, 1);
-  assert.equal(
-    body.extraction.byo_completion[0].fact,
-    "svc-b depends on svc-c",
-  );
-  assert.equal(body.auto_merge, true);
-  const headers = calls[0].init.headers as Record<string, string>;
-  assert.ok(
-    headers["idempotency-key"],
-    "observe is a write and must carry a key",
-  );
-  await client.close();
-});
-
 test("lbb_commit derives stable idempotency keys and honors explicit overrides", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -413,7 +319,6 @@ test("lbb_commit mode=search_feedback writes relevance labels", async () => {
     arguments: {
       mode: "search_feedback",
       graph: "crm",
-      branch: "main",
       search_feedback: {
         query: "customer identity records",
         search_id: "search_123",
@@ -437,7 +342,6 @@ test("lbb_commit mode=search_feedback writes relevance labels", async () => {
   assert.equal(calls.length, 1);
   assert.match(calls[0].input, /\/v1\/search\/feedback\?/);
   assert.match(calls[0].input, /graph=crm/);
-  assert.match(calls[0].input, /branch=main/);
   assert.match(
     calls[0].init.headers?.["idempotency-key"] ?? "",
     /^mcp\.commit:[0-9a-f]{64}$/,

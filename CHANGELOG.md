@@ -2,6 +2,14 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+Breaking removal of branches and observe. Every graph has one line of history.
+
+- Remove the `branch` argument from every tool, `LBB_BRANCH` from the stdio
+  server, and `?branch=` from the HTTP server. Tools are scoped by graph only.
+- Remove the `lbb_branch` and `lbb_observe` tools.
+
 ## 0.5.2 (2026-09-24)
 
 - Require `@littlebigbrain/client` 0.13.2 or later in the 0.13 series, which

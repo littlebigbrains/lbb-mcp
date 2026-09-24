@@ -71,7 +71,7 @@ export function registerLbbTools(
           );
       }
       return run(client, `lbb_inspect.${args.action}`, args.detail, () => {
-        const target = scoped(client, args.graph, args.branch);
+        const target = scoped(client, args.graph);
         switch (args.action) {
           case "guide":
             return guide(target);
@@ -165,10 +165,7 @@ export function registerLbbTools(
             if (cursor && cursor.mode !== args.mode) {
               throw new Error(`cursor is for ${cursor.mode}, not ${args.mode}`);
             }
-            assertCursorScope(
-              { graph: args.graph, branch: args.branch },
-              cursor,
-            );
+            assertCursorScope({ graph: args.graph }, cursor);
             if (
               cursor &&
               args.row_limit !== undefined &&
@@ -184,9 +181,8 @@ export function registerLbbTools(
               args.row_limit ?? cursor?.row_limit,
             );
             const graph = cursor?.graph ?? args.graph;
-            const branch = cursor?.branch ?? args.branch;
             const offset = cursor?.offset ?? 0;
-            const target = scoped(client, graph, branch);
+            const target = scoped(client, graph);
             const timing = queryTiming(options, {
               mode: args.mode,
               continuation: cursor !== undefined,
@@ -357,7 +353,6 @@ export function registerLbbTools(
                 v: 1,
                 mode: "structured",
                 graph,
-                branch,
                 detail,
                 row_limit: rowLimit,
                 body,
@@ -432,7 +427,6 @@ export function registerLbbTools(
               v: 1,
               mode: "sparql",
               graph,
-              branch,
               detail,
               row_limit: rowLimit,
               query,
@@ -458,7 +452,7 @@ export function registerLbbTools(
       if (args.mode === "search") {
         const searchArgs = args;
         return run(client, "lbb_query.search", undefined, async () => {
-          const target = scoped(client, searchArgs.graph, searchArgs.branch);
+          const target = scoped(client, searchArgs.graph);
           return target.embeddings.search({
             embedding: searchArgs.embedding,
             text: searchArgs.text,
@@ -472,7 +466,7 @@ export function registerLbbTools(
         });
       }
       return run(client, `lbb_query.${args.mode}`, args.detail, async () => {
-        const target = scoped(client, args.graph, args.branch);
+        const target = scoped(client, args.graph);
         return analyze(target, {
           metric: args.metric,
           chart: args.chart,
@@ -506,9 +500,9 @@ export function registerLbbTools(
       },
       annotations: READ_ONLY,
     },
-    ({ action, body, limit, split_seq, detail, graph, branch }) =>
+    ({ action, body, limit, split_seq, detail, graph }) =>
       run(client, `lbb_models.${action}`, detail, () => {
-        const target = scoped(client, graph, branch);
+        const target = scoped(client, graph);
         switch (action) {
           case "shadow_eval":
             if (!body) throw new Error("shadow_eval requires body");
@@ -596,7 +590,7 @@ export function registerLbbTools(
     },
     (args) =>
       run(client, `lbb_embeddings.${args.action}`, args.detail, () => {
-        const target = scoped(client, args.graph, args.branch);
+        const target = scoped(client, args.graph);
         switch (args.action) {
           case "list":
             return target.embeddings.list();
@@ -632,7 +626,7 @@ export function registerLbbTools(
     },
     (args) =>
       run(client, `lbb_embeddings_manage.${args.action}`, args.detail, () => {
-        const target = scoped(client, args.graph, args.branch);
+        const target = scoped(client, args.graph);
         switch (args.action) {
           case "declare":
             return target.embeddings.declare(recipeOf(args) as never);
@@ -662,12 +656,12 @@ export function registerLbbTools(
       },
       annotations: DESTRUCTIVE,
     },
-    ({ name, confirm, detail, graph, branch }) =>
+    ({ name, confirm, detail, graph }) =>
       run(client, "lbb_embeddings_delete", detail, () => {
         if (confirm !== name) {
           throw new Error("confirm must repeat the embedding name");
         }
-        return scoped(client, graph, branch).embeddings.delete(name);
+        return scoped(client, graph).embeddings.delete(name);
       }),
   );
 
@@ -790,10 +784,9 @@ export function registerLbbTools(
       consistency,
       detail,
       graph,
-      branch,
     }) =>
       run(client, `lbb_evals.${action}`, detail, () => {
-        const target = scoped(client, graph, branch);
+        const target = scoped(client, graph);
         switch (action) {
           case "summary":
             return target.evals.summary();
@@ -944,7 +937,6 @@ export function registerLbbTools(
       retract_edges,
       retract_entities,
       graph,
-      branch,
     }) =>
       run(client, "lbb_commit", "standard", () => {
         const commitMode =
@@ -968,16 +960,10 @@ export function registerLbbTools(
           }
           const key =
             idempotency_key ??
-            contentHashKey(
-              { graph, branch },
-              { mode: "retract", edges, entities },
-            );
-          return scoped(client, graph, branch).retract(
-            { edges, entities } as never,
-            {
-              idempotencyKey: key,
-            },
-          );
+            contentHashKey({ graph }, { mode: "retract", edges, entities });
+          return scoped(client, graph).retract({ edges, entities } as never, {
+            idempotencyKey: key,
+          });
         }
         if (commitMode === "search_feedback") {
           if (!search_feedback)
@@ -987,10 +973,10 @@ export function registerLbbTools(
           const key =
             idempotency_key ??
             contentHashKey(
-              { graph, branch },
+              { graph },
               { mode: "search_feedback", search_feedback },
             );
-          return scoped(client, graph, branch).searchFeedback(
+          return scoped(client, graph).searchFeedback(
             search_feedback as never,
             { idempotencyKey: key },
           );
@@ -1016,11 +1002,10 @@ export function registerLbbTools(
             "lbb_commit requires at least one triplet, entity embedding, or entity property",
           );
         }
-        const key =
-          idempotency_key ?? contentHashKey({ graph, branch }, payload);
+        const key = idempotency_key ?? contentHashKey({ graph }, payload);
         if (dry_run)
-          return scoped(client, graph, branch).commitDryRun(payload as never);
-        return scoped(client, graph, branch).commit(payload as never, {
+          return scoped(client, graph).commitDryRun(payload as never);
+        return scoped(client, graph).commit(payload as never, {
           idempotencyKey: key,
         });
       }),
@@ -1040,21 +1025,19 @@ export function registerLbbTools(
       const args = parsed.data;
       return run(client, `lbb_configure.${args.action}`, "standard", () => {
         if (args.action === "define_ontology") {
-          return client
-            .withScope({ graph: args.graph, branch: args.branch })
-            .ontologyDefine(
-              ontologyDefineBody({
-                entity_types: args.entity_types,
-                relations: args.relations,
-                source: args.source,
-                format: args.format,
-                merge_default: args.merge_default,
-                dry_run: args.dry_run,
-              }) as never,
-            );
+          return client.withScope({ graph: args.graph }).ontologyDefine(
+            ontologyDefineBody({
+              entity_types: args.entity_types,
+              relations: args.relations,
+              source: args.source,
+              format: args.format,
+              merge_default: args.merge_default,
+              dry_run: args.dry_run,
+            }) as never,
+          );
         }
         if (args.action === "evolve_ontology") {
-          return scoped(client, args.graph, args.branch).ontology.evolve(
+          return scoped(client, args.graph).ontology.evolve(
             {
               ops: args.ops,
               allow_data_conflicts: args.allow_data_conflicts ?? false,
@@ -1067,7 +1050,7 @@ export function registerLbbTools(
             "publish_schema requires a SHACL shapes source; use define_ontology or evolve_ontology for native metadata changes",
           );
         }
-        return scoped(client, args.graph, args.branch).schema.publish(
+        return scoped(client, args.graph).schema.publish(
           {
             ontology: args.ontology,
             shapes: args.shapes,
@@ -1078,131 +1061,5 @@ export function registerLbbTools(
         );
       });
     },
-  );
-
-  server.registerTool(
-    "lbb_branch",
-    {
-      description:
-        "Branch lifecycle. Actions: create (fork a new branch off from_branch — the tool's `branch` argument names the NEW branch) and merge (validate-then-merge: replay from_branch's post-fork commits onto the scoped target branch — its fork parent — as ONE commit with event ids preserved; SHACL-validates the would-be merged state first and refuses with the report on violations; a fact superseded on the target after the fork wins over the branch's version, reported as a supersedure_race conflict; delete_source consumes the merged branch).",
-      inputSchema: {
-        action: z
-          .enum(["create", "merge"])
-          .describe(
-            "create = fork a new branch; merge = replay a child branch onto its fork parent",
-          ),
-        from_branch: z
-          .string()
-          .describe(
-            "create: the branch to fork from; merge: the child branch whose commits are replayed",
-          ),
-        validate: z
-          .boolean()
-          .optional()
-          .describe(
-            "merge only: refuse on SHACL violations of the would-be merged state (default true)",
-          ),
-        delete_source: z
-          .boolean()
-          .optional()
-          .describe(
-            "merge only: delete every object under the merged branch after success",
-          ),
-        ...graphScope,
-      },
-      annotations: MUTATING,
-    },
-    ({ action, from_branch, validate, delete_source, graph, branch }) =>
-      run(client, `lbb_branch.${action}`, "standard", () => {
-        const target = scoped(client, graph, branch);
-        if (action === "create") return target.createBranch({ from_branch });
-        return target.mergeBranch({
-          from_branch,
-          validate: validate ?? true,
-          delete_source: delete_source ?? false,
-        });
-      }),
-  );
-
-  server.registerTool(
-    "lbb_observe",
-    {
-      description:
-        "Remember a conversation: store the turns verbatim as an EPISODE evidence entity, then anchor + gate the supplied facts on an observe branch (LLM extraction cannot poison the main graph). Facts with both endpoints already in the graph are anchored; unanchored facts need confidence >= 0.8 to mint new entities, else they come back needs_review. auto_merge merges the branch onto the scoped branch when SHACL validation is clean (the validate-then-merge). Server flag-gated (--enable-observe). This build takes caller-extracted facts (each with a structured triplet); bare statements come back needs_review.",
-      inputSchema: {
-        session_id: z
-          .string()
-          .describe(
-            "Caller's conversation id (drives the default observe branch name)",
-          ),
-        turns: z
-          .array(
-            z.object({
-              role: z.string().describe("user | assistant | tool"),
-              content: z.string(),
-              name: z.string().optional(),
-              ts: z.string().optional().describe("RFC 3339 timestamp"),
-            }),
-          )
-          .min(1)
-          .describe("The conversation slice to remember (stored verbatim)"),
-        source: z
-          .string()
-          .optional()
-          .describe("Source label, e.g. support-bot"),
-        facts: z
-          .array(
-            z.object({
-              fact: z.string().describe("Natural-language statement"),
-              confidence: z.number().optional().describe("0..1 (default 0.9)"),
-              triplet: jsonObjectSchema
-                .optional()
-                .describe(
-                  "Structured form {source:{type,name}, relation, target:{type,name}} — required for the fact to commit",
-                ),
-            }),
-          )
-          .optional()
-          .describe(
-            "Caller-extracted candidate facts; omit with extract:false to store the episode only",
-          ),
-        extract: z
-          .boolean()
-          .optional()
-          .describe("false = store the episode only (default true)"),
-        observe_branch: z
-          .string()
-          .optional()
-          .describe(
-            "Branch for the facts (default observe-<hash12(session_id)>)",
-          ),
-        auto_merge: z
-          .boolean()
-          .optional()
-          .describe("Merge onto the scoped branch when validation is clean"),
-        ...graphScope,
-      },
-      annotations: MUTATING,
-    },
-    ({
-      session_id,
-      turns,
-      source,
-      facts,
-      extract,
-      observe_branch,
-      auto_merge,
-      graph,
-      branch,
-    }) =>
-      run(client, "lbb_observe", "standard", () =>
-        scoped(client, graph, branch).observe({
-          episode: { turns, session_id, source },
-          extract: extract ?? true,
-          extraction: { byo_completion: (facts ?? []) as never },
-          branch: observe_branch,
-          auto_merge: auto_merge ?? false,
-        } as never),
-      ),
   );
 }

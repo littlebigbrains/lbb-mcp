@@ -13,14 +13,8 @@ import {
   type RowPage,
 } from "./tool-contracts.js";
 
-export const scoped = (
-  client: LbbClient,
-  graph?: string,
-  branch?: string,
-): LbbClient =>
-  graph !== undefined || branch !== undefined
-    ? client.withScope({ graph, branch })
-    : client;
+export const scoped = (client: LbbClient, graph?: string): LbbClient =>
+  graph !== undefined ? client.withScope({ graph }) : client;
 
 export function normalizeDetail(detail?: string): Detail {
   return detail === "standard" || detail === "full" ? detail : DEFAULT_DETAIL;
@@ -72,17 +66,12 @@ export function decodeQueryCursor(cursor?: string): QueryCursor | undefined {
 }
 
 export function assertCursorScope(
-  args: { graph?: string; branch?: string },
+  args: { graph?: string },
   cursor?: QueryCursor,
 ): void {
   if (!cursor) return;
   if (args.graph !== undefined && args.graph !== cursor.graph) {
     throw new Error("cursor graph does not match the supplied graph argument");
-  }
-  if (args.branch !== undefined && args.branch !== cursor.branch) {
-    throw new Error(
-      "cursor branch does not match the supplied branch argument",
-    );
   }
 }
 
@@ -259,13 +248,13 @@ export function normalizeLbbIris(query: string): {
 }
 
 export function contentHashKey(
-  scope: { graph?: string; branch?: string },
+  scope: { graph?: string },
   payload: unknown,
 ): string {
   const digest = createHash("sha256")
     .update(
       stableJson({
-        scope: { graph: scope.graph ?? null, branch: scope.branch ?? null },
+        scope: { graph: scope.graph ?? null },
         payload,
       }),
     )
@@ -577,67 +566,45 @@ export function errorResult(error: unknown) {
 }
 
 /**
- * A graph-scope 404 surfaces as a raw object-storage key
- * (`not found: tenants/<t>/graphs/<g>/branches/<b>/heads/current.json`), which
- * only means something if you already know the graph's real name. Rewrite it
- * into an actionable message: name the graph/branch this request targeted, and —
- * via the tenant-scoped `GET /v1/graphs`, which resolves even when the scoped
- * graph is absent — list the graphs (or branches) that do exist and tell the
- * caller to pass `graph=`/`branch=`. Every other error passes through untouched.
+ * A graph-scope 404 surfaces as a raw object-storage key ending in
+ * `heads/current.json`, which only means something if you already know the
+ * graph's real name. Rewrite it into an actionable message: name the graph this
+ * request targeted and — via the tenant-scoped `GET /v1/graphs`, which resolves
+ * even when the scoped graph is absent — list the graphs that do exist and tell
+ * the caller to pass `graph=`. Every other error passes through untouched,
+ * including a head 404 on a graph the listing still reports.
  */
 export async function enrichError(
   client: LbbClient,
   error: unknown,
 ): Promise<unknown> {
   if (!(error instanceof LbbError) || error.status !== 404) return error;
-  const match = /graphs\/([^/]+)\/branches\/([^/]+)\/heads\/current\.json/.exec(
+  const match = /graphs\/([^/\s]+)\/(?:[^/\s]+\/)*heads\/current\.json/.exec(
     error.message,
   );
   if (!match) return error;
-  const [, graph, branch] = match;
-  let graphs: { graph_id: string; branches?: string[] }[] = [];
+  const [, graph] = match;
+  let names: string[] = [];
   try {
     const listed = (await client.listGraphs()) as {
-      data?: { graph_id?: unknown; branches?: unknown }[];
+      data?: { graph_id?: unknown }[];
     };
-    graphs = (listed.data ?? []).flatMap((g) =>
-      typeof g.graph_id === "string"
-        ? [
-            {
-              graph_id: g.graph_id,
-              branches: Array.isArray(g.branches)
-                ? (g.branches as string[])
-                : undefined,
-            },
-          ]
-        : [],
+    names = (listed.data ?? []).flatMap((g) =>
+      typeof g.graph_id === "string" ? [g.graph_id] : [],
     );
   } catch {
     // Listing failed too (auth, transport); fall back to the generic-but-actionable hint.
   }
-  const existing = graphs.find((g) => g.graph_id === graph);
-  let message: string;
-  if (existing) {
-    const branches = existing.branches ?? [];
-    const list =
-      branches.length > 0
-        ? ` Existing branches: ${branches.slice(0, 50).join(", ")}.`
-        : "";
-    message =
-      `branch "${branch}" was not found on graph "${graph}" in this tenant.${list} ` +
-      "Pass an existing branch as the `branch` argument.";
-  } else {
-    const names = graphs.map((g) => g.graph_id);
-    const list =
-      names.length > 0
-        ? ` Available graphs in this tenant: ${names.slice(0, 50).join(", ")}.`
-        : "";
-    const example = names.length > 0 ? ` (e.g. graph="${names[0]}")` : "";
-    message =
-      `graph "${graph}" was not found in this tenant — this request targeted graph "${graph}", branch "${branch}" ` +
-      `(either you passed it or it is the connection default).${list} ` +
-      `Pass an existing graph as the \`graph\` argument${example}.`;
-  }
+  if (names.includes(graph)) return error;
+  const list =
+    names.length > 0
+      ? ` Available graphs in this tenant: ${names.slice(0, 50).join(", ")}.`
+      : "";
+  const example = names.length > 0 ? ` (e.g. graph="${names[0]}")` : "";
+  const message =
+    `graph "${graph}" was not found in this tenant — this request targeted graph "${graph}" ` +
+    `(either you passed it or it is the connection default).${list} ` +
+    `Pass an existing graph as the \`graph\` argument${example}.`;
   return new LbbError(error.status, error.body, {
     type: error.type,
     code: error.code,
@@ -859,7 +826,7 @@ export async function guide(
       inspect:
         "Use lbb_inspect for ontology, schema metadata, the published conformance report, metadata, state/history/why, and this guide. Use lbb_query with SPARQL property paths for exact path queries.",
       ontology_decorations:
-        "lbb_inspect action=ontology returns a decoration_status catalog: each ontology decoration is enforced (the engine acts on it — state_reducer, value_type, super_types, properties, supernode_policy; cardinality, which GET /v1/ontology/conformance audits as sh:maxCount; and inverse_name/symmetric, which SPARQL resolves as relation aliases — an inverse name is queryable directly (lowered to ^forward, no stored inverse triple) and a symmetric relation matches both directions), advisory (transitive, temporal_semantics, required), or reserved (stored but unwired — default_weight, resolvable, alias/embedding_fields). You can also always reverse any relation in SPARQL by flipping the triple pattern or using ^forward. Each relation_def also carries edge_count — the number of current edges of that relation in this branch's snapshot — so you can tell at a glance which declared relations are actually populated (edge_count 0 = declared but unused) without a separate summary call.",
+        "lbb_inspect action=ontology returns a decoration_status catalog: each ontology decoration is enforced (the engine acts on it — state_reducer, value_type, super_types, properties, supernode_policy; cardinality, which GET /v1/ontology/conformance audits as sh:maxCount; and inverse_name/symmetric, which SPARQL resolves as relation aliases — an inverse name is queryable directly (lowered to ^forward, no stored inverse triple) and a symmetric relation matches both directions), advisory (transitive, temporal_semantics, required), or reserved (stored but unwired — default_weight, resolvable, alias/embedding_fields). You can also always reverse any relation in SPARQL by flipping the triple pattern or using ^forward. Each relation_def also carries edge_count — the number of current edges of that relation in this graph's snapshot — so you can tell at a glance which declared relations are actually populated (edge_count 0 = declared but unused) without a separate summary call.",
       search:
         "Use lbb_query mode=search to find instances by meaning. It covers every searchable class; filter narrows it by class and by relationship, and the graph checks every hit. To plan a search: (1) lbb_embeddings action=list gives the searchable classes, the facts each text is made from, and the graph's model. (2) lbb_query mode=sparql shows the relationships of a class on a sample: PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?p (COUNT(DISTINCT ?s) AS ?n) (SAMPLE(?l) AS ?example) WHERE { { SELECT ?s WHERE { ?s a <CLASS> } LIMIT 500 } ?s ?p ?o . FILTER(isIRI(?o) && ?p != rdf:type) OPTIONAL { ?o rdfs:label ?l } } GROUP BY ?p ORDER BY DESC(?n); write ?o ?p ?s for the links into the class, and SELECT ?c WHERE { ?c rdfs:subClassOf* <CLASS> } (same prefixes) for its subclasses. (3) lbb_query mode=search with filter [{class}, {via, to}] and explain=true returns the plan: the resolved relationship and entities, the allowed count, and the mode, with no model call. Check it, then run the search without explain. A name in to resolves against labels (a small typo too); an unknown relationship or name answers with the options.",
       query:

@@ -39,8 +39,6 @@ test(
         "test",
         "--graph",
         "main",
-        "--branch",
-        "main",
         "--bind",
         `127.0.0.1:${address.port}`,
       ],

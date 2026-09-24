@@ -42,7 +42,6 @@ export interface McpHttpServerOptions {
     baseUrl: string;
     apiKey: string;
     graph?: string;
-    branch?: string;
   }) => LbbClient;
 }
 
@@ -200,7 +199,6 @@ export function createMcpHttpServer(options: McpHttpServerOptions): Server {
           baseUrl,
           apiKey,
           graph: url.searchParams.get("graph") ?? undefined,
-          branch: url.searchParams.get("branch") ?? undefined,
         };
         const client = options.clientFactory
           ? options.clientFactory(clientOptions)

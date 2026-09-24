@@ -18,7 +18,6 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   const client = await connect(async () => ok());
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-    "lbb_branch",
     "lbb_commit",
     "lbb_configure",
     "lbb_embeddings",
@@ -27,7 +26,6 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_evals",
     "lbb_inspect",
     "lbb_models",
-    "lbb_observe",
     "lbb_query",
     "lbb_rdf",
   ]);
@@ -97,7 +95,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "cc1cc02a9c18cb7b72d241ccecec12093601e11a80072a1ab4f7d0b0932f4b65",
+    "5b6eebaf7daa079b798a153fb13316471720d5030fa3484f07132016595df6c0",
   );
   await client.close();
 });
