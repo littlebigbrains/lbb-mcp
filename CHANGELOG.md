@@ -2,6 +2,19 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.5.2 (2026-09-24)
+
+- Require `@littlebigbrain/client` 0.13.2 or later in the 0.13 series, which
+  provides the search and evaluation methods used by the MCP tools.
+- Add tools to inspect, configure, and delete embeddings, plus search by
+  meaning through `lbb_query` with class and relationship filters.
+- Add `lbb_evals` for query traces, result labels, and repeatable checks against
+  saved queries.
+- Keep SPARQL pages on the same commit and return complete values within each
+  page's size limit.
+- Rewrite the README with connection instructions, a complete RDF import and
+  query example, expected output, and links to the current guides.
+
 ## 0.5.1 (2026-09-18)
 
 - Bound query pages by UTF-8 bytes while preserving complete RDF values.

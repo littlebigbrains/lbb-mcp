@@ -1,10 +1,32 @@
 # @littlebigbrain/mcp
 
-Eight task-shaped [MCP](https://modelcontextprotocol.io) tools that let Claude, Cursor, Codex, or any MCP client search, query, and write a [Little Big Brain](https://littlebigbrain.com) graph. Ships two ways: a hosted endpoint with OAuth sign-in, and a local stdio server.
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for
+[little big brain](https://littlebigbrain.com), a search platform for AI
+applications such as chatbots, search tools, and agents.
 
-## Hosted (OAuth) — recommended
+Connect an MCP client to search your data, follow relationships, and read the
+facts behind an answer. The tools also let you load data and define validation
+rules.
 
-The client opens WorkOS sign-in; your machine never stores a Little Big Brain key. Point it at your stack:
+[Documentation](https://docs.littlebigbrain.com/sdks/mcp/) ·
+[Quickstart](https://docs.littlebigbrain.com/start/quickstart/) ·
+[Issues](https://github.com/littlebigbrains/lbb-mcp/issues)
+
+## Connect
+
+Create a stack in the [console](https://cloud.littlebigbrain.com), then choose a
+hosted connection or a local process.
+
+### Hosted connection
+
+For clients that support remote MCP with OAuth, use this URL and sign in with
+your little big brain account. Replace `<stack-slug>` with your stack's slug:
+
+```text
+https://mcp.littlebigbrain.com/mcp/<stack-slug>
+```
+
+For clients that use an `mcpServers` JSON configuration:
 
 ```json
 {
@@ -16,23 +38,15 @@ The client opens WorkOS sign-in; your machine never stores a Little Big Brain ke
 }
 ```
 
-Codex sends the URL as an OAuth `resource`, so use the origin plus a stack header instead:
+This connection uses account sign-in and does not require a stack API key.
+The [connection guide](https://docs.littlebigbrain.com/sdks/mcp/#hosted-streamable-http-oauth)
+includes client-specific setup, including the origin URL and `X-LBB-Stack` header
+for Codex.
 
-```json
-{
-  "mcpServers": {
-    "lbb": {
-      "type": "http",
-      "url": "https://mcp.littlebigbrain.com",
-      "headers": { "X-LBB-Stack": "<stack-slug>" }
-    }
-  }
-}
-```
+### Local process
 
-## Local (stdio)
-
-Run against any data-plane endpoint with a stack API key:
+Requires Node.js 18+. Copy the complete endpoint and a stack API key from
+**Connect** in the console, then add them to your client's MCP configuration:
 
 ```json
 {
@@ -41,156 +55,128 @@ Run against any data-plane endpoint with a stack API key:
       "command": "npx",
       "args": ["-y", "@littlebigbrain/mcp"],
       "env": {
-        "LBB_BASE_URL": "https://0abc1def--production.db.eu.littlebigbrain.com",
-        "LBB_API_KEY": "lbb_sk_live_..."
+        "LBB_BASE_URL": "https://<your-complete-stack-host>",
+        "LBB_API_KEY": "<your-stack-api-key>"
       }
     }
   }
 }
 ```
 
-Set `LBB_GRAPH` or `LBB_BRANCH` to target a scope other than `main`.
-`LBB_BASE_URL` has no hosted default: copy `endpoint_url` from the stack's
-Connect page. The MCP process exits with a configuration error when it is
-missing.
+The client starts the server and communicates through standard input and output
+(stdio). Keep the key in your local configuration. Set `LBB_GRAPH` or
+`LBB_BRANCH` to change the default scope from `main`.
 
-## Tools
+## Run a first query
 
-| Tool | Use it for |
-| --- | --- |
-| `lbb_inspect` | graph discovery, complete paginated ontology/schema, publication status, entity, state, history, and provenance |
-| `lbb_rdf` | import full RDF/OWL or add axioms using INSERT DATA |
-| `lbb_query` | SPARQL text, structured SPARQL bodies, and canned analysis |
-| `lbb_commit` | facts, properties, and embeddings |
-| `lbb_observe` | conversation episodes plus reviewed extraction |
-| `lbb_branch` | isolation branches and validated merge |
-| `lbb_models` | shadow evaluation and training datasets |
-| `lbb_configure` | native ontology definition/evolution and SHACL preview/publication |
+This example stores three facts in a graph named `quickstart`: a service writes
+to a database, and each has a label. The graph is created on its first write.
 
-Read tools return compact structured envelopes by default — use `detail`, `row_limit`, and returned cursors to page without silently truncating. Write tools derive an idempotency key unless you provide one.
-
-Query pages preserve complete RDF values and may contain fewer than `row_limit`
-rows to fit the 80 KB UTF-8 text budget. Query text uses compact JSON, with the
-same complete data in `structuredContent`. The full transport response includes
-both representations and can exceed 80 KB. Follow the returned `next` arguments
-until absent; the cursor advances by rows actually delivered. A single row that
-exceeds the budget fails explicitly: project fewer fields or use the direct
-SPARQL HTTP endpoint for that row.
-
-
-Both `lbb_query` SPARQL modes (`sparql` and `structured`) support retained commit reads
-through `as_of_commit_seq`. When omitted, the connector pins the current head
-commit and reuses it for cursor pages. Valid-time `as_of` is unsupported and is
-rejected before an API call, including when carried in an old cursor. Start a
-new query without that selector or choose a retained commit sequence.
-
-## Create and evolve an ontology through MCP
-
-Start with `lbb_inspect action=guide`; `action=graphs` helps select an existing
-scope, and a missing graph returns bootstrap guidance. Decide what questions
-the graph must answer before choosing classes and relations. Distinguish
-source-backed facts from hypotheses, and preserve evidence and dates.
-
-Native metadata and stored RDF axioms are separate:
-
-- `lbb_configure action=define_ontology` accepts a friendly `spec`, including
-  class `super_types`. Unknown spec fields fail explicitly. `lbb_json` expects
-  an internal serialized ontology, not a friendly spec. Raw OWL supplied to
-  configure is reduced to native metadata; it is not stored as a full document.
-- `lbb_rdf action=import` stores the complete Turtle, N-Triples, N-Quads, or TriG
-  document as queryable graph facts, including RDF lists, annotations, and OWL
-  axioms. Pass `source`; the published RDF tier supports only the default RDF
-  graph. Dataset formats must contain only default-graph quads. The first RDF
-  data write selects RDF-native storage, which refuses
-  later property-graph commits; choose the write workflow before bootstrap.
-- `lbb_configure action=evolve_ontology` supports explicit native changes,
-  including `add_super_types`. `dry_run: true` previews define/evolve/publish;
-  the same flag previews `lbb_commit mode=facts` without writing.
-- `lbb_rdf action=update` submits SPARQL Update unchanged; currently only
-  `INSERT DATA` is supported. DELETE, WHERE, and graph replacement are refused.
-  Re-importing is
-  additive and does not remove obsolete axioms. Content-based retry keys are
-  automatic; use a new explicit key for an intentional repeat after other edits.
-
-For example, add a superclass without a browser or RDF conversion:
+Ask your client to call `lbb_rdf` with these arguments:
 
 ```json
 {
-  "action": "update",
-  "update": "INSERT DATA { <urn:Person> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <urn:Contact> }"
+  "action": "import",
+  "graph": "quickstart",
+  "format": "ntriples",
+  "source": "<https://example.org/auth-service> <https://example.org/writesTo> <https://example.org/user-db> .\n<https://example.org/auth-service> <http://www.w3.org/2000/01/rdf-schema#label> \"Auth Service\" .\n<https://example.org/user-db> <http://www.w3.org/2000/01/rdf-schema#label> \"User Database\" .",
+  "idempotency_key": "mcp-quickstart-v1"
 }
 ```
 
-Removing or replacing RDF axioms requires native bounded update support in the
-engine. Until then, import a revised document into a new versioned LBB graph,
-verify it, and explicitly switch consumers. Do not implicitly delete the original.
+Now ask **which database does Auth Service write to?** The `lbb_query` call is:
 
-`publish_schema` activates SHACL shapes against unchanged native metadata.
-Its preview checks parsing and compatibility without writing objects or
-scheduling jobs; it does not audit the entire graph. Preview restrictive
-native edits with evolve, resolve conflicts, then apply. For restrictive
-SHACL, use warn → inspect conformance → repair → reject.
-
-After applying, inspect `action=publication`, then verify both asserted axioms
-and expected inferred answers. `lbb_query mode=sparql` accepts explicit
-`entailment: "none" | "subclass" | "rdfs" | "owl"` (default `none`),
-`consistency: "eventual" | "strong"`, and `min_indexed_seq`. Cursors retain
-these controls. OWL is the server's supported inference profile, not arbitrary
-OWL DL. An upload acknowledgement is not proof of successful reasoning.
-
-To read asserted axioms in the default graph, query with `entailment: "none"`
-and follow all returned row cursors:
-
-```sparql
-SELECT ?s ?p ?o WHERE {
-  ?s ?p ?o
-} ORDER BY ?s ?p ?o
+```json
+{
+  "mode": "sparql",
+  "graph": "quickstart",
+  "consistency": "strong",
+  "query": "SELECT ?database WHERE { <https://example.org/auth-service> <https://example.org/writesTo> ?db . ?db <http://www.w3.org/2000/01/rdf-schema#label> ?database } ORDER BY ?database LIMIT 10"
+}
 ```
 
-`lbb_inspect action=ontology` and `action=schema` page complete native metadata
-with `page_size` (default 50, maximum 500), optional `section`, and `cursor`.
-Pass the returned `next` arguments until absent. These pages preserve nested
-values even with `detail=compact`; they never replace the remainder with a
-suggestion to repeat `detail=full`. If a single entry is too large, the result
-contains `entry_fragment`: concatenate `serialized_json` by `char_offset`, then
-JSON-parse the completed entry. Changed metadata invalidates the cursor rather
-than mixing versions. Restart inspection after applying edits.
+The result contains one row on a fresh graph:
+
+| database |
+| --- |
+| User Database |
+
+The query follows a stored relationship to its database label. Strong consistency
+lets it read the import without waiting for a background index job.
+
+For your own data, start with `lbb_inspect` using `action: "guide"` or
+`action: "ontology"`. Imported Resource Description Framework (RDF) data keeps
+its original identifiers; inspect it with SPARQL when choosing query predicates.
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `lbb_inspect` | Read the schema, graph status, entities, history, and evidence. |
+| `lbb_query` | Run SPARQL queries, search by meaning, or request summary statistics. |
+| `lbb_rdf` | Import RDF documents or add facts with SPARQL `INSERT DATA`. |
+| `lbb_embeddings` | Inspect search setup and preview the text to embed. |
+| `lbb_embeddings_manage` | Set up or refresh embeddings, or change the embedding model. |
+| `lbb_embeddings_delete` | Delete an embedding and its stored vectors. |
+| `lbb_commit` | Write or retract JSON facts, or record search feedback. |
+| `lbb_configure` | Define record types and relationships, or publish validation rules. |
+| `lbb_branch` | Create branches and merge reviewed changes. |
+| `lbb_observe` | Store conversation episodes and reviewed facts extracted from them. |
+| `lbb_evals` | Label query results and check whether later queries return the expected answers. |
+| `lbb_models` | Compare retrieval settings and read model training datasets. |
+
+See [search by meaning](https://docs.littlebigbrain.com/guides/search-by-meaning/)
+for embedding setup. To define constraints with the Shapes Constraint Language
+(SHACL), see [query and validation](https://docs.littlebigbrain.com/guides/sparql-and-shacl/).
+
+RDF imports and JSON facts use different write workflows. A graph first written
+through `lbb_rdf` does not accept JSON fact writes through `lbb_commit`, or branch
+forks and merges. Choose the workflow when creating the graph. RDF updates
+support additive `INSERT DATA`;
+see the [RDF guide](https://docs.littlebigbrain.com/guides/load-rdf/) for format and
+update limits.
+
+## Pages and saved queries
+
+When a result includes `next`, pass those arguments to the same tool to read the
+next page. Continue until `next` is absent. `row_limit` sets a maximum; large
+values can make a page shorter.
+
+SPARQL queries keep the same commit across pages. Save the query and its returned
+commit sequence to check an answer later, then use `as_of_commit_seq` to select
+that version. See [history and replay](https://docs.littlebigbrain.com/guides/time-travel-audit/)
+for retention and evidence handling.
 
 ## Embed the server
 
-For self-hosting behind your own auth, the package also serves the tools over HTTP:
+To serve the tools from your own Node.js process:
 
 ```ts
 import { createMcpHttpServer } from "@littlebigbrain/mcp";
 
 createMcpHttpServer({
-  baseUrl: "https://0abc1def--production.db.eu.littlebigbrain.com",
+  baseUrl: process.env.LBB_BASE_URL!,
   mcpPath: "/mcp",
   allowedHosts: ["127.0.0.1", "localhost", "::1"],
 }).listen(8080, "127.0.0.1");
 ```
 
-The embedded server passes a key bearer to the data plane; the hosted endpoint's OAuth and ownership layer is served separately by the Little Big Brain API.
+Clients connect to `http://127.0.0.1:8080/mcp` and send a stack API key in
+`Authorization: Bearer <key>`. See the
+[Node.js integration guide](https://docs.littlebigbrain.com/sdks/mcp/#embed-in-a-node-process)
+for HTTP options and integration with an existing MCP server.
 
-When using `buildLbbServer(client, options)` directly, `queryTextFormat: "pretty"`
-restores indented query text; the default is `"compact"`. Both formats use the
-same formatter for page sizing and rendering. Optional `timing.observe` receives
-bounded query-stage durations and counts, with no query text or RDF values.
-No logger is installed by default, including on stdio. Timing observer failures
-do not affect tool results.
+## Development
 
-Full tool schemas and examples: [docs.littlebigbrain.com/sdks/mcp](https://docs.littlebigbrain.com/sdks/mcp/).
-
-## Local end-to-end ontology check
-
-From the repository root, build the server and SDKs, then opt into the isolated
-real-server MCP test (it creates and removes its own temporary data root):
+From a clone of this repository:
 
 ```sh
-cargo build -p lbb-server
-npm run build -w @littlebigbrain/client
-LBB_TEST_SERVER_BIN="$PWD/target/debug/lbb-server" npm test -w @littlebigbrain/mcp
+npm ci
+npm run build
+npm run typecheck
+npm test
 ```
 
-The test verifies native hierarchy evolution, preservation of RDF annotations,
-subclass/inverse inference, additive edits, and refusal of unsupported deletion.
+## License
+
+[Apache-2.0](LICENSE).
