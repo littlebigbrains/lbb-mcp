@@ -69,10 +69,7 @@ test("a graph-not-found 404 is rewritten into an actionable message that lists r
       listedGraphs += 1;
       return ok({
         object: "list",
-        data: [
-          { graph_id: "vc_outreach", branches: ["main"] },
-          { graph_id: "product_dev", branches: ["main", "staging"] },
-        ],
+        data: [{ graph_id: "vc_outreach" }, { graph_id: "product_dev" }],
         has_more: false,
       });
     }
@@ -134,12 +131,14 @@ test("a graph-not-found 404 is rewritten into an actionable message that lists r
   await client.close();
 });
 
-test("a missing-branch 404 on an existing graph points at the real branches", async () => {
+test("a head 404 on a graph the listing still reports passes through unchanged", async () => {
+  const raw =
+    "not found: tenants/lbb-dev/graphs/vc_outreach/branches/main/heads/current.json";
   const fetch: FetchLike = async (input) => {
     if (input.includes("/v1/graphs")) {
       return ok({
         object: "list",
-        data: [{ graph_id: "vc_outreach", branches: ["main", "experiment"] }],
+        data: [{ graph_id: "vc_outreach" }],
         has_more: false,
       });
     }
@@ -151,8 +150,7 @@ test("a missing-branch 404 on an existing graph points at the real branches", as
           error: {
             type: "not_found_error",
             code: "not_found",
-            message:
-              "not found: tenants/lbb-dev/graphs/vc_outreach/branches/dev/heads/current.json",
+            message: raw,
           },
         }),
     };
@@ -163,15 +161,7 @@ test("a missing-branch 404 on an existing graph points at the real branches", as
     arguments: { action: "metadata" },
   });
   const structured = result.structuredContent as { error: { message: string } };
-  assert.match(
-    structured.error.message,
-    /branch "dev" was not found on graph "vc_outreach"/,
-  );
-  assert.match(structured.error.message, /Existing branches: main, experiment/);
-  assert.match(
-    structured.error.message,
-    /Pass an existing branch as the `branch` argument/,
-  );
+  assert.equal(structured.error.message, raw);
   await client.close();
 });
 

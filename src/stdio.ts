@@ -15,7 +15,7 @@ const BASE_URL_HELP =
  *
  *   LBB_BASE_URL  (required for tool calls; copy endpoint_url from the stack Connect page)
  *   LBB_API_KEY   stack API key (lbb_sk_live_…) or single-mode token
- *   LBB_GRAPH / LBB_BRANCH  (optional; server defaults to main/main)
+ *   LBB_GRAPH     (optional; server defaults to main)
  *
  * The base URL is required lazily, at the first tool invocation, not at
  * process start: MCP hosts launch servers to complete the initialize
@@ -53,7 +53,6 @@ async function main(): Promise<void> {
         baseUrl,
         apiKey: process.env.LBB_API_KEY,
         graph: process.env.LBB_GRAPH,
-        branch: process.env.LBB_BRANCH,
       })
     : unconfiguredClient();
   const server = buildLbbServer(client);

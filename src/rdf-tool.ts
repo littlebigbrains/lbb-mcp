@@ -62,14 +62,13 @@ export function registerRdfTool(server: McpServer, client: LbbClient): void {
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
       return run(client, `lbb_rdf.${args.action}`, args.detail, async () => {
-        const target = scoped(client, args.graph, args.branch);
+        const target = scoped(client, args.graph);
         const { idempotency_key } = args;
         const operation = { ...args };
         delete operation.detail;
         delete operation.idempotency_key;
         const key =
-          idempotency_key ??
-          contentHashKey({ graph: args.graph, branch: args.branch }, operation);
+          idempotency_key ?? contentHashKey({ graph: args.graph }, operation);
         if (args.action === "import") {
           return target.importRdf(args.source, {
             format: args.format ?? "turtle",

@@ -10,7 +10,6 @@ export type QueryCursor = {
   v: 1;
   mode: "sparql" | "structured";
   graph?: string;
-  branch?: string;
   detail: Detail;
   row_limit: number;
   offset: number;
@@ -70,10 +69,6 @@ export const graphScope = {
     .string()
     .optional()
     .describe("Graph to target; defaults to the connection's graph"),
-  branch: z
-    .string()
-    .optional()
-    .describe("Branch to target; defaults to the connection's branch"),
 };
 
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
@@ -706,7 +701,6 @@ export const configureInputSchema = z.discriminatedUnion("action", [
           "Preview the exact definition without creating a graph or writing metadata.",
         ),
       graph: z.string().describe("Graph to create or redefine"),
-      branch: graphScope.branch,
       entity_types: z.array(z.union([z.string(), jsonObjectSchema])).optional(),
       relations: z.array(z.union([z.string(), jsonObjectSchema])).optional(),
       source: z.string().optional(),
@@ -766,7 +760,7 @@ export const configureInputSchema = z.discriminatedUnion("action", [
  * rejects as `Expected object, received string`.
  *
  * Flatten the union into a single ZodObject purely for advertisement and
- * transport: the discriminant becomes an enum, every branch field is merged in
+ * transport: the discriminant becomes an enum, every variant field is merged in
  * as optional, and unknown keys pass through. Each handler still `safeParse`s the
  * raw args against the original strict union before dispatching, so per-variant
  * required/forbidden fields are enforced exactly as before.

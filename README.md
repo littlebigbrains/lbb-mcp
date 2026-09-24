@@ -64,8 +64,8 @@ Requires Node.js 18+. Copy the complete endpoint and a stack API key from
 ```
 
 The client starts the server and communicates through standard input and output
-(stdio). Keep the key in your local configuration. Set `LBB_GRAPH` or
-`LBB_BRANCH` to change the default scope from `main`.
+(stdio). Keep the key in your local configuration. Set `LBB_GRAPH` to change
+the default graph from `main`.
 
 ## Run a first query
 
@@ -120,8 +120,6 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_embeddings_delete` | Delete an embedding and its stored vectors. |
 | `lbb_commit` | Write or retract JSON facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, or publish validation rules. |
-| `lbb_branch` | Create branches and merge reviewed changes. |
-| `lbb_observe` | Store conversation episodes and reviewed facts extracted from them. |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. |
 | `lbb_models` | Compare retrieval settings and read model training datasets. |
 
@@ -130,8 +128,8 @@ for embedding setup. To define constraints with the Shapes Constraint Language
 (SHACL), see [query and validation](https://docs.littlebigbrain.com/guides/sparql-and-shacl/).
 
 RDF imports and JSON facts use different write workflows. A graph first written
-through `lbb_rdf` does not accept JSON fact writes through `lbb_commit`, or branch
-forks and merges. Choose the workflow when creating the graph. RDF updates
+through `lbb_rdf` does not accept JSON fact writes through `lbb_commit`. Choose
+the workflow when creating the graph. RDF updates
 support additive `INSERT DATA`;
 see the [RDF guide](https://docs.littlebigbrain.com/guides/load-rdf/) for format and
 update limits.
