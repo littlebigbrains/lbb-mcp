@@ -2,7 +2,7 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
-## Unreleased
+## 0.6.0 (2026-09-25)
 
 Breaking removal of branches, observe, and planner training. Every graph has
 one line of history.
@@ -12,6 +12,7 @@ one line of history.
 - Remove the `lbb_branch` and `lbb_observe` tools.
 - Remove the `planner_dataset` and `planner_preference_dataset` actions from
   `lbb_models`. The server no longer trains the planner.
+- Require `@littlebigbrain/client` ^0.14.0.
 
 ## 0.5.2 (2026-09-24)
 

@@ -11,6 +11,7 @@ test("SPARQL text requests match the API contract with default and explicit comm
     as_of_commit_seq: true,
     limit: true,
     offset: true,
+    cursor: true,
     entailment: true,
     reason: true,
     request: true,
