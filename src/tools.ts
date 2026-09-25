@@ -55,7 +55,7 @@ export function registerLbbTools(
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, state, history, transitions, why. graphs works before bootstrap; publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's metadata, scalar attributes, bounded Base-backed edge neighborhood, history, and observations. Use lbb_query with SPARQL property paths for precise path selection.",
+        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity. graphs works before bootstrap; publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's attributes and current relationships from the RDF read. For a node's past values, run SPARQL with as_of_commit_seq through lbb_query. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -101,46 +101,6 @@ export function registerLbbTools(
               asOf: args.as_of,
               asOfCommitSeq: args.as_of_commit_seq,
             });
-          case "state":
-            return target.currentState({
-              entity: {
-                entity_type: args.entity_type,
-                name: args.name,
-              },
-              relations: args.relation ? [args.relation] : null,
-              as_of_valid_time: args.as_of ?? null,
-              as_of_commit_seq: args.as_of_commit_seq ?? null,
-            } as never);
-          case "history":
-            return target.history({
-              source: {
-                entity_type: args.entity_type,
-                name: args.name,
-              },
-              relation: args.relation ?? null,
-            } as never);
-          case "why":
-            return target.why({
-              source: {
-                entity_type: args.source_type,
-                name: args.source_name,
-              },
-              relation: args.relation,
-              target: {
-                entity_type: args.target_type,
-                name: args.target_name,
-              },
-            } as never);
-          case "transitions":
-            return target.transitions({
-              entity: {
-                entity_type: args.entity_type,
-                name: args.name,
-              },
-              relation: args.relation,
-              as_of_valid_time: args.as_of ?? null,
-              as_of_commit_seq: args.as_of_commit_seq ?? null,
-            } as never);
         }
       });
     },
