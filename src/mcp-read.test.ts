@@ -144,7 +144,7 @@ test("lbb_models preserves published-root APIs", async () => {
   await client.close();
 });
 
-test("lbb_inspect consolidates guide, ontology, metadata, state, history, and why", async () => {
+test("lbb_inspect consolidates guide, ontology, metadata, and entity reads", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
@@ -200,40 +200,6 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, and wh
     name: "lbb_inspect",
     arguments: { action: "entity", entity_type: "Person", name: "Ada" },
   });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
-      action: "state",
-      entity_type: "Person",
-      name: "Ada",
-      relation: "KNOWS",
-    },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: { action: "history", entity_type: "Person", name: "Ada" },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
-      action: "why",
-      source_type: "Person",
-      source_name: "Ada",
-      relation: "KNOWS",
-      target_type: "Person",
-      target_name: "Grace",
-    },
-  });
-  await client.callTool({
-    name: "lbb_inspect",
-    arguments: {
-      action: "transitions",
-      entity_type: "Person",
-      name: "Ada",
-      relation: "IN_STAGE",
-    },
-  });
-
   assert.match(calls[1].input, /\/v1\/ontology\?/);
   assert.match(calls[1].input, /graph=support/);
   assert.match(calls[2].input, /\/v1\/ontology\/search\?/);
@@ -241,10 +207,17 @@ test("lbb_inspect consolidates guide, ontology, metadata, state, history, and wh
   assert.match(calls[4].input, /\/v1\/graph\/entity\?/);
   assert.match(calls[4].input, /type=Person/);
   assert.match(calls[4].input, /name=Ada/);
-  assert.match(calls[5].input, /\/v1\/query\/state\?/);
-  assert.match(calls[6].input, /\/v1\/query\/history\?/);
-  assert.match(calls[7].input, /\/v1\/query\/why\?/);
-  assert.match(calls[8].input, /\/v1\/query\/transitions\?/);
+  assert.equal(calls.length, 5);
+
+  // The Base-family record-history actions were removed with their routes.
+  for (const action of ["state", "history", "why", "transitions"]) {
+    const removed = await client.callTool({
+      name: "lbb_inspect",
+      arguments: { action, entity_type: "Person", name: "Ada" },
+    });
+    assert.equal(removed.isError, true, `${action} must be rejected`);
+  }
+  assert.equal(calls.length, 5, "a removed action sends no request");
   await client.close();
 });
 

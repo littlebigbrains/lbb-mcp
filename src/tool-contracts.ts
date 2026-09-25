@@ -450,61 +450,8 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
         .nonnegative()
         .optional()
         .describe(
-          "Snapshot pin: reproduce the node (state, edges, history) as of this commit_seq.",
+          "Snapshot pin: reproduce the node's attributes and relationships as of this commit_seq.",
         ),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("state"),
-      entity_type: z.string(),
-      name: z.string(),
-      relation: z.string().optional(),
-      as_of: z.string().optional(),
-      as_of_commit_seq: z
-        .number()
-        .int()
-        .nonnegative()
-        .optional()
-        .describe(
-          "Snapshot pin: reproduce the state as of this commit_seq, hiding later commits. Errors if past head.",
-        ),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("history"),
-      entity_type: z.string(),
-      name: z.string(),
-      relation: z.string().optional(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("why"),
-      source_type: z.string(),
-      source_name: z.string(),
-      relation: z.string(),
-      target_type: z.string(),
-      target_name: z.string(),
-      ...readScope,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("transitions"),
-      entity_type: z.string(),
-      name: z.string(),
-      relation: z
-        .string()
-        .describe(
-          "State/status relation to trace, e.g. IN_STAGE or HAS_STATUS",
-        ),
-      as_of: z.string().optional(),
-      as_of_commit_seq: z.number().int().nonnegative().optional(),
       ...readScope,
     })
     .strict(),

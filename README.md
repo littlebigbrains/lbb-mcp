@@ -112,7 +112,7 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 
 | Tool | Purpose |
 | --- | --- |
-| `lbb_inspect` | Read the schema, graph status, entities, history, and evidence. |
+| `lbb_inspect` | Read the schema, graph status, and entities. |
 | `lbb_query` | Run SPARQL queries, search by meaning, or request summary statistics. |
 | `lbb_rdf` | Import RDF documents or add facts with SPARQL `INSERT DATA`. |
 | `lbb_embeddings` | Inspect search setup and preview the text to embed. |
