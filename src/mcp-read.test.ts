@@ -1273,3 +1273,54 @@ test("search tools route to the embeddings and search API", async () => {
     await client.close();
   }
 });
+
+test("lbb_query mode=search honours detail: full returns every hit and its whole text", async () => {
+  const long = "x".repeat(900);
+  const hits = Array.from({ length: 20 }, (_, i) => ({
+    id: `h${i}`,
+    iri: `https://x.test/e/${i}`,
+    label: `hit ${i}`,
+    class: "https://x.test/class/job",
+    embedding: "job",
+    score: 1 - i / 100,
+    text: `description: ${long}`,
+  }));
+  const client = await connect(async (input) =>
+    input.includes("/v1/search")
+      ? ok({ hits, embeddings: [], served_at_seq: 1 })
+      : ok({}),
+  );
+  try {
+    const full = await client.callTool({
+      name: "lbb_query",
+      arguments: {
+        mode: "search",
+        text: "retrieval engineer",
+        top_k: 20,
+        detail: "full",
+        include: ["text"],
+      },
+    });
+    assert.notEqual(full.isError, true, JSON.stringify(full));
+    const fullData = payload(full).data as { hits: { text: string }[] };
+    assert.equal(fullData.hits.length, 20);
+    assert.equal(fullData.hits[0].text, `description: ${long}`);
+    assert.notEqual(payload(full).truncated, true);
+
+    // The compact default still trims, and its hint names the next level.
+    const compact = await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "search", text: "retrieval engineer", top_k: 20 },
+    });
+    const compactPayload = payload(compact) as {
+      data: { hits: unknown[] };
+      truncated?: boolean;
+      next?: { detail?: string };
+    };
+    assert.equal(compactPayload.data.hits.length, 5);
+    assert.equal(compactPayload.truncated, true);
+    assert.equal(compactPayload.next?.detail, "standard");
+  } finally {
+    await client.close();
+  }
+});

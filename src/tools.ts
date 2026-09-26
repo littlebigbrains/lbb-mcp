@@ -411,7 +411,9 @@ export function registerLbbTools(
       }
       if (args.mode === "search") {
         const searchArgs = args;
-        return run(client, "lbb_query.search", undefined, async () => {
+        // The caller's detail shapes the hits like every other mode: compact
+        // trims to 5 hits of 300 characters, standard and full return more.
+        return run(client, "lbb_query.search", searchArgs.detail, async () => {
           const target = scoped(client, searchArgs.graph);
           return target.embeddings.search({
             embedding: searchArgs.embedding,
