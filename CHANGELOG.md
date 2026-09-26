@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.7.1 (2026-09-26)
+
+- `lbb_query` with `mode: "search"` honours `detail`. Every search used the
+  compact limits (5 hits, text cut at 300 characters) whatever the caller
+  asked for. `compact` stays the default.
+
 ## 0.7.0 (2026-09-26)
 
 - Remove the `state`, `history`, `transitions`, and `why` actions from
