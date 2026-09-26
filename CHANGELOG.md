@@ -2,12 +2,13 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
-## Unreleased
+## 0.7.0 (2026-09-26)
 
 - Remove the `state`, `history`, `transitions`, and `why` actions from
   `lbb_inspect`. Their routes answered `429 ingest_busy` on every graph and
   are removed from the server. Read a node's past values with SPARQL and
   `as_of_commit_seq` through `lbb_query`.
+- Require `@littlebigbrain/client` ^0.15.0.
 
 ## 0.6.0 (2026-09-25)
 
