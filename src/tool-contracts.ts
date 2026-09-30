@@ -431,6 +431,17 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("metadata"), ...readScope }).strict(),
   z
     .object({
+      action: z.literal("ontology_suggestions"),
+      status: z
+        .enum(["open", "accepted", "dismissed", "superseded"])
+        .optional()
+        .describe("Only suggestions in this state; default all"),
+      limit: z.number().int().min(1).max(500).optional(),
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("entity"),
       entity_id: z
         .string()
@@ -691,6 +702,60 @@ export const configureInputSchema = z.discriminatedUnion("action", [
         .optional()
         .describe(
           "Deprecated compatibility flag; does not bypass conflicts. Preview subtractive changes with dry_run=true, repair the reported conflicts, then apply.",
+        ),
+      ...graphScope,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("suggest_ontology_change"),
+      title: z
+        .string()
+        .min(1)
+        .max(200)
+        .describe("Short imperative text, e.g. 'Add class Contractor'"),
+      change: z
+        .array(ontologyEvolveOpSchema)
+        .min(1)
+        .max(64)
+        .describe(
+          "The ontology operations a person applies by accepting, in order (same shapes as evolve_ontology ops)",
+        ),
+      rationale: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe("Why the ontology needs the change; cite what you saw"),
+      anchor: z
+        .object({
+          kind: z.enum(["ontology", "class", "property", "relation"]),
+          name: z.string().max(200).optional(),
+        })
+        .strict()
+        .optional()
+        .describe("The class, property or relation the change is about"),
+      agent: z
+        .string()
+        .max(200)
+        .optional()
+        .describe("Your name as the producer, shown to reviewers"),
+      key: z
+        .string()
+        .max(255)
+        .optional()
+        .describe(
+          "Idempotency key ([A-Za-z0-9-_.:/]); filing again with the same key revises the suggestion",
+        ),
+      evidence: z
+        .object({
+          records: z.number().int().nonnegative().optional(),
+          source_fields: z.array(z.string()).max(200).optional(),
+          samples: z.array(jsonObjectSchema).max(20).optional(),
+        })
+        .strict()
+        .optional()
+        .describe(
+          "What you saw: record count, fields, up to 20 sample records",
         ),
       ...graphScope,
     })
