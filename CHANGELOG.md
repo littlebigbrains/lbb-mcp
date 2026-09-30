@@ -2,6 +2,14 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- Add `suggest_ontology_change` to `lbb_configure`. An agent files an
+  ontology change for a person to review instead of applying it. The change
+  uses the same operations as `evolve_ontology`.
+- Add `ontology_suggestions` to `lbb_inspect`. It lists the suggestions and
+  their state. Agents cannot accept suggestions.
+
 ## 0.7.1 (2026-09-26)
 
 - `lbb_query` with `mode: "search"` honours `detail`. Every search used the
