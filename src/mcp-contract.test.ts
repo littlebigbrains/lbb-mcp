@@ -95,7 +95,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "600976ab650e70bd76c53da8a0417b220f05af9ed10132fb65586eddb0e228a7",
+    "c95e0d81f15ab538a5751fdab75df5871984160e498ab03f747006abb9c835af",
   );
   await client.close();
 });
@@ -170,6 +170,12 @@ test("dispatch tools advertise real object input schemas (regression: object arg
     "array",
     "evolve_ontology ops advertised as an array",
   );
+  assert.ok(
+    configure.properties.action?.enum?.includes("suggest_ontology_change"),
+    "agents can file ontology change suggestions",
+  );
+  assert.equal(configure.properties.change?.type, "array");
+  assert.ok(inspect.properties.action?.enum?.includes("ontology_suggestions"));
 
   await client.close();
 });
