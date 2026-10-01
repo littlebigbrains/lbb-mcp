@@ -15,6 +15,7 @@ test("SPARQL text requests match the API contract with default and explicit comm
     entailment: true,
     reason: true,
     request: true,
+    profile: true,
   };
   for (const commit of [undefined, 0, 7]) {
     const calls: Call[] = [];
