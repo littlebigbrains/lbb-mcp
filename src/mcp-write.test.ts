@@ -414,3 +414,75 @@ test("lbb_commit search feedback validation returns structured tool errors", asy
   );
   await client.close();
 });
+
+test("lbb_configure suggest_ontology_change files a suggestion as an agent and never evolves", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ suggestion_id: "sg_1", status: "open" });
+  };
+  const client = await connect(fetch);
+
+  const result = await client.callTool({
+    name: "lbb_configure",
+    arguments: {
+      action: "suggest_ontology_change",
+      graph: "support",
+      title: "Make Contractor a subclass of Person",
+      rationale: "12 tickets name contractors as assignees",
+      change: [
+        {
+          op: "add_super_types",
+          entity_type: "Contractor",
+          super_types: ["Person"],
+        },
+      ],
+      anchor: { kind: "class", name: "Contractor" },
+      agent: "triage-bot",
+      evidence: { records: 12 },
+    },
+  });
+
+  assert.notEqual(result.isError, true);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].input, /\/v1\/ontology\/suggestions\?/);
+  assert.match(calls[0].input, /graph=support/);
+  assert.equal(calls[0].init.method, "POST");
+  const body = JSON.parse(calls[0].init.body ?? "{}");
+  assert.equal(body.title, "Make Contractor a subclass of Person");
+  assert.deepEqual(body.origin, {
+    kind: "agent",
+    id: "triage-bot",
+    label: "triage-bot",
+  });
+  assert.deepEqual(body.anchor, { kind: "class", name: "Contractor" });
+  assert.equal(body.change[0].op, "add_super_types");
+  assert.deepEqual(body.evidence, { records: 12 });
+  assert.equal(body.key, undefined, "the server derives the key");
+  await client.close();
+});
+
+test("lbb_inspect ontology_suggestions lists by status", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({
+      ontology_version: 3,
+      counts: { open: 1, accepted: 0, dismissed: 0, superseded: 0 },
+      suggestions: [],
+      truncated: false,
+    });
+  };
+  const client = await connect(fetch);
+
+  await client.callTool({
+    name: "lbb_inspect",
+    arguments: { action: "ontology_suggestions", status: "open" },
+  });
+
+  assert.match(calls[0].input, /\/v1\/ontology\/suggestions\?/);
+  assert.match(calls[0].input, /status=open/);
+  assert.match(calls[0].input, /limit=50/);
+  assert.equal(calls[0].init.method, "GET");
+  await client.close();
+});
