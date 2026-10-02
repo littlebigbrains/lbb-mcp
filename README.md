@@ -119,7 +119,7 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_embeddings_manage` | Set up or refresh embeddings, or change the embedding model. |
 | `lbb_embeddings_delete` | Delete an embedding and its stored vectors. |
 | `lbb_commit` | Write or retract JSON facts, or record search feedback. |
-| `lbb_configure` | Define record types and relationships, or publish validation rules. |
+| `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), or publish validation rules. |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. |
 | `lbb_models` | Compare retrieval settings and read model training datasets. |
 
