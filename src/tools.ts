@@ -55,7 +55,7 @@ export function registerLbbTools(
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity. graphs works before bootstrap; publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's attributes and current relationships from the RDF read. For a node's past values, run SPARQL with as_of_commit_seq through lbb_query. Use lbb_query with SPARQL property paths for precise path selection.",
+        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, ontology_suggestions. graphs works before bootstrap; ontology_suggestions lists the ontology change suggestions that wait for review (or were decided). publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's attributes and current relationships from the RDF read. For a node's past values, run SPARQL with as_of_commit_seq through lbb_query. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -90,6 +90,11 @@ export function registerLbbTools(
             } as never);
           case "metadata":
             return target.metadata();
+          case "ontology_suggestions":
+            return target.ontology.suggestions.list({
+              status: args.status,
+              limit: args.limit ?? 50,
+            });
           case "entity":
             return target.entityDetail({
               ...(args.entity_id
@@ -964,7 +969,7 @@ export function registerLbbTools(
     "lbb_configure",
     {
       description:
-        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), publish_schema (SHACL activation). All support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
+        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions). define, evolve and publish support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
       inputSchema: configureWireSchema,
       annotations: MUTATING,
     },
@@ -983,6 +988,30 @@ export function registerLbbTools(
               merge_default: args.merge_default,
               dry_run: args.dry_run,
             }) as never,
+          );
+        }
+        if (args.action === "suggest_ontology_change") {
+          const agent = args.agent ?? "mcp agent";
+          return scoped(client, args.graph).ontology.suggestions.create({
+            title: args.title,
+            rationale: args.rationale ?? "",
+            change: args.change,
+            origin: { kind: "agent", id: agent, label: agent },
+            ...(args.anchor ? { anchor: args.anchor } : {}),
+            ...(args.key ? { key: args.key } : {}),
+            ...(args.evidence ? { evidence: args.evidence } : {}),
+          } as never);
+        }
+        if (args.action === "list_starters") {
+          return scoped(client, args.graph).ontology.starters.list();
+        }
+        if (args.action === "apply_starter") {
+          return scoped(client, args.graph).ontology.starters.apply(
+            args.starter,
+            {
+              dryRun: args.dry_run,
+              expectedOntologyVersion: args.expected_ontology_version,
+            },
           );
         }
         if (args.action === "evolve_ontology") {
