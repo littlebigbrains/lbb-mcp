@@ -2,6 +2,10 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- Require `@littlebigbrain/client` ^0.18.0.
+
 ## 0.8.1 (2026-10-03)
 
 - `suggest_ontology_change` takes up to 128 operations in `change`, the same
