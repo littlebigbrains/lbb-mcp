@@ -462,6 +462,43 @@ test("lbb_configure suggest_ontology_change files a suggestion as an agent and n
   await client.close();
 });
 
+test("lbb_configure suggest_ontology_change takes up to 128 operations, as the server does", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ suggestion_id: "sg_1", status: "open" });
+  };
+  const client = await connect(fetch);
+  const ops = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      op: "add_entity_type",
+      name: `Type${i}`,
+    }));
+
+  const largest = await client.callTool({
+    name: "lbb_configure",
+    arguments: {
+      action: "suggest_ontology_change",
+      title: "Add 128 classes",
+      change: ops(128),
+    },
+  });
+  assert.notEqual(largest.isError, true);
+  assert.equal(JSON.parse(calls[0].init.body ?? "{}").change.length, 128);
+
+  const tooMany = await client.callTool({
+    name: "lbb_configure",
+    arguments: {
+      action: "suggest_ontology_change",
+      title: "Add 129 classes",
+      change: ops(129),
+    },
+  });
+  assert.equal(tooMany.isError, true);
+  assert.equal(calls.length, 1, "a refused call sends no request");
+  await client.close();
+});
+
 test("lbb_configure lists starters with their status and applies one with a dry run", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
