@@ -2,6 +2,11 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.8.1 (2026-10-03)
+
+- `suggest_ontology_change` takes up to 128 operations in `change`, the same
+  limit as the server. It refused more than 64.
+
 ## 0.8.0 (2026-10-02)
 
 - Add `list_starters` and `apply_starter` to `lbb_configure`. `list_starters`

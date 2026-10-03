@@ -747,7 +747,7 @@ export const configureInputSchema = z.discriminatedUnion("action", [
       change: z
         .array(ontologyEvolveOpSchema)
         .min(1)
-        .max(64)
+        .max(128)
         .describe(
           "The ontology operations a person applies by accepting, in order (same shapes as evolve_ontology ops)",
         ),
