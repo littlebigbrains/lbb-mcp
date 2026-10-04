@@ -25,6 +25,8 @@ export type QueryCursor = {
 export const DEFAULT_DETAIL: Detail = "compact";
 export const HARD_OUTPUT_CHARS = 80_000;
 export const MAX_QUERY_ROW_LIMIT = 5_000;
+/** The most rows `POST /v1/query/rewrite` returns from a run. */
+export const QUESTION_MAX_ROWS = 1_000;
 export const READ_ONLY = { readOnlyHint: true } as const;
 export const IDEMPOTENT_WRITE = {
   readOnlyHint: false,
@@ -73,6 +75,8 @@ export const graphScope = {
 
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const jsonObjectArraySchema = z.array(jsonObjectSchema);
+/** A month, `yyyy-mm` (UTC), as the model activity and model checks read it. */
+export const yearMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 export const readScope = { detail: detailSchema, ...graphScope };
 export const metadataPageSchema = {
   page_size: z
@@ -449,11 +453,12 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
         .describe("Entity id (hex); alternative to entity_type+name"),
       entity_type: z.string().optional(),
       name: z.string().optional(),
+      // Kept for an actionable error when an older connector sends this field.
       as_of: z
         .string()
         .optional()
         .describe(
-          "Valid-time snapshot pin (RFC3339): reproduce the node as of this instant.",
+          "Unsupported for entity; use as_of_commit_seq for a retained commit snapshot.",
         ),
       as_of_commit_seq: z
         .number()
@@ -473,6 +478,11 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
 // through the ontology to reverse-engineer term IRIs.
 export const SPARQL_IRI_GUIDE =
   'IRI scheme: relations are <https://littlebigbrain.com/r/NAME> (NAME lowercased, e.g. writes_to; reverse a relation with the ^ path operator, no stored inverse triple). Types are <https://littlebigbrain.com/class/NAME> (lowercased), matched as `?x a <…/class/NAME>` with explicit entailment=subclass, rdfs, or owl for inference (default none). Property fields are <https://littlebigbrain.com/p/NAME> (lowercased). The local name is ALWAYS lowercase — an uppercase one (e.g. <…/r/FOR_CLIENT>) is a different, non-existent IRI that silently matches nothing; this tool auto-lowercases the local name of /r/, /class/, and /p/ IRIs for you and adds a `notes` entry when it does, so a stray uppercase still resolves. (Structured mode\'s `predicate` is case-insensitive on its own.) Entities are content-addressed <https://littlebigbrain.com/e/HASH> — never build an entity IRI from a name; anchor a named entity by its label instead: `?e <http://www.w3.org/2000/01/rdf-schema#label> "Acme"`. Discover the exact relation and type names with lbb_inspect action=ontology. SELECT and ASK only (CONSTRUCT/DESCRIBE are rejected).';
+
+// Search by meaning runs inside SPARQL text as a pattern, so an agent can
+// filter and join the hits in one query instead of a search then a lookup.
+export const SPARQL_SEARCH_GUIDE =
+  'Search by meaning inside the query (the graph needs an embedding; see lbb_embeddings action=list): PREFIX search: <https://littlebigbrain.com/search#> SELECT ?x ?score WHERE { ?x search:similarTo "card payments" ; search:score ?score . ?x <https://littlebigbrain.com/r/calls> ?y } ORDER BY DESC(?score) LIMIT 5. The other patterns filter and join the hits. One search:similarTo per query, with a variable subject, in the main group (not inside OPTIONAL, UNION, MINUS or a subquery). The object is text, an entity IRI (records like that one) or a vector literal. search:top N sets the hits (1 to 1000; default the query LIMIT, then 10) and search:embedding "name" searches one embedding. FILTER(?score > 0.8) keeps close hits. The result\'s search field reports the plan (nearest, filter_first or search_first), the hits and complete.';
 
 export const queryInputSchema: z.ZodDiscriminatedUnion<
   "mode",
@@ -528,7 +538,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .optional()
         .describe(
-          `SPARQL 1.1 query text (SELECT or ASK). Valid-time as_of is unsupported; use as_of_commit_seq for a retained commit snapshot. ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10`,
+          `SPARQL 1.1 query text (SELECT or ASK). Valid-time as_of is unsupported; use as_of_commit_seq for a retained commit snapshot. ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10. ${SPARQL_SEARCH_GUIDE}`,
         ),
       // Kept for an actionable error when an older connector sends this field.
       as_of: z
@@ -551,6 +561,52 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         ),
       row_limit: rowLimitSchema,
       cursor: cursorSchema,
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("question"),
+      question: z
+        .string()
+        .min(1)
+        .describe(
+          "question: the question in plain words (required), 1 to 4,000 characters. The server writes the SPARQL query from a description of this graph, checks it, and runs it.",
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "question: notes for the model, at most 8,000 characters: what the data means, units, names to prefer.",
+        ),
+      route: z
+        .enum([
+          "lookup",
+          "aggregate",
+          "search",
+          "history",
+          "schema",
+          "unanswerable",
+        ])
+        .optional()
+        .describe(
+          "question: the kind of query, when you know it. Omit it and the router model selects it.",
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(QUESTION_MAX_ROWS)
+        .optional()
+        .describe(
+          "question: rows the run returns, 1 to 1,000. Defaults by detail: compact=20, standard=100, full=1000.",
+        ),
+      run: z
+        .boolean()
+        .optional()
+        .describe(
+          "question: run the query and return its rows. Defaults to true; false returns the query only.",
+        ),
       ...readScope,
     })
     .strict(),
@@ -622,6 +678,12 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .optional()
         .describe(
           "Plan without running: the scope, the resolved filter, and the allowed count. No model call.",
+        ),
+      rerank: z
+        .boolean()
+        .optional()
+        .describe(
+          "true: the managed rerank model (Jev) orders the best hits by how well each answers the text, and each hit gets its relevance (0 to 1); adds about 0.3 s. false: the similarity order. Omit it to follow the graph's search setting.",
         ),
       request: z
         .string()

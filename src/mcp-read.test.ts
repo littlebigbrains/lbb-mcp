@@ -145,6 +145,218 @@ test("lbb_models preserves published-root APIs", async () => {
   await client.close();
 });
 
+test("lbb_models activity reads one month of the stack's model use", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({
+      month: "2026-09",
+      months: ["2026-09"],
+      managed: [],
+      totals: [],
+      by_day: [],
+      by_graph: [],
+    });
+  };
+  const client = await connect(fetch);
+
+  const september = await client.callTool({
+    name: "lbb_models",
+    arguments: { action: "activity", month: "2026-09" },
+  });
+  await client.callTool({
+    name: "lbb_models",
+    arguments: { action: "activity" },
+  });
+  const malformed = await client.callTool({
+    name: "lbb_models",
+    arguments: { action: "activity", month: "September" },
+  });
+
+  assert.notEqual(september.isError, true);
+  assert.equal((payload(september).data as { month: string }).month, "2026-09");
+  const [first, second] = calls.map((call) => new URL(call.input));
+  assert.equal(first.pathname, "/v1/models/activity");
+  assert.equal(first.searchParams.get("month"), "2026-09");
+  assert.equal(second.searchParams.has("month"), false);
+  assert.equal(malformed.isError, true);
+  assert.equal(calls.length, 2, "a malformed month sends no request");
+  await client.close();
+});
+
+test("lbb_evals reads the model checks summary and the checks of a graph", async () => {
+  const summary: Schemas["ModelChecksSummary"] = {
+    month: "2026-10",
+    months: ["2026-10"],
+    graph: "crm",
+    jobs: [
+      {
+        job: "rerank",
+        provider: "typesafe",
+        model: "jev-latest",
+        checks: 4,
+        score: 0.75,
+        right: 2,
+        partly: 1,
+        wrong: 1,
+        reviewed: 1,
+        corrected: 1,
+      },
+    ],
+    judge: {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      reviewed: 2,
+      overruled: 1,
+      agreement: 0.5,
+    },
+    budget: {
+      day: "2026-10-04",
+      cost_micro_usd: 0,
+      limit_micro_usd: 2_000_000,
+      checks: 0,
+    },
+    checker_available: true,
+    calls: 40,
+  };
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return new URL(input).pathname.endsWith("/summary")
+      ? ok(summary)
+      : ok({ checks: [], next_after: "c0" });
+  };
+  const client = await connect(fetch);
+
+  const month = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "checks_summary", month: "2026-10", graph: "crm" },
+  });
+  const listed = await client.callTool({
+    name: "lbb_evals",
+    arguments: {
+      action: "checks",
+      job: "rerank",
+      verdict: "wrong",
+      reviewed: false,
+      after: "c1",
+      limit: 10,
+    },
+  });
+  const malformed = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "checks", month: "October" },
+  });
+
+  assert.notEqual(month.isError, true);
+  assert.equal(
+    (payload(month).data as Schemas["ModelChecksSummary"]).judge?.agreement,
+    0.5,
+  );
+  assert.notEqual(listed.isError, true);
+  assert.equal(
+    (payload(listed).data as Schemas["ModelCheckListResponse"]).next_after,
+    "c0",
+  );
+  const [first, second] = calls.map((call) => new URL(call.input));
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(first.pathname, "/v1/models/checks/summary");
+  assert.deepEqual(Object.fromEntries(first.searchParams), {
+    graph: "crm",
+    month: "2026-10",
+  });
+  assert.equal(second.pathname, "/v1/models/checks");
+  assert.deepEqual(Object.fromEntries(second.searchParams), {
+    graph: "g",
+    job: "rerank",
+    verdict: "wrong",
+    reviewed: "false",
+    after: "c1",
+    limit: "10",
+  });
+  assert.equal(malformed.isError, true);
+  assert.equal(calls.length, 2, "a malformed month sends no request");
+  await client.close();
+});
+
+test("lbb_query sparql keeps the report of a search inside the query", async () => {
+  const report = {
+    plan: "search_first",
+    top: 3,
+    hits: 1,
+    complete: false,
+    candidates: 8192,
+    rounds: 4,
+    clusters_probed: 64,
+    entries_considered: 9000,
+    embeddings: ["service"],
+    model_id: "openai/text-embedding-3-small",
+    lag_commits: 0,
+    timings: {
+      resolve_ms: 0,
+      embed_ms: 12,
+      filter_ms: 30,
+      index_ms: 4,
+      rerank_ms: 1,
+      check_ms: 0,
+      total_ms: 47,
+    },
+    usage: { texts: 1, tokens_estimate: 3, cost_usd_estimate: 0 },
+  };
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    if (input.includes("/v1/graph/metadata")) {
+      return ok({ snapshot: { commit_seq: 7 } });
+    }
+    if (input.includes("/v1/query/sparql-text")) {
+      const body = JSON.parse(init?.body ?? "{}") as { query: string };
+      const searched = body.query.includes("search:similarTo");
+      return ok({
+        results: JSON.stringify({
+          head: { vars: ["x"] },
+          results: { bindings: [{ x: { type: "uri", value: "x:1" } }] },
+        }),
+        row_page: {
+          returned: 1,
+          total: 1,
+          offset: 0,
+          limit: 20,
+          has_more: false,
+        },
+        ...(searched ? { search: report } : {}),
+      });
+    }
+    return ok({});
+  };
+  const client = await connect(fetch);
+
+  const found = await client.callTool({
+    name: "lbb_query",
+    arguments: {
+      mode: "sparql",
+      query:
+        'PREFIX search: <https://littlebigbrain.com/search#> SELECT ?x WHERE { ?x search:similarTo "card payments" ; <https://littlebigbrain.com/r/calls> ?y } LIMIT 3',
+    },
+  });
+  const plain = await client.callTool({
+    name: "lbb_query",
+    arguments: { mode: "sparql", query: "SELECT ?x WHERE { ?x ?p ?o }" },
+  });
+
+  const body = payload(found) as ReturnType<typeof payload> & {
+    search?: typeof report;
+    notes?: string[];
+  };
+  assert.deepEqual(body.search, report);
+  assert.ok(
+    body.notes?.some((note) => /bound 1 of the 3 hits/.test(note)),
+    "an incomplete search is named in notes",
+  );
+  assert.equal("search" in payload(plain), false);
+  await client.close();
+});
+
 test("lbb_inspect consolidates guide, ontology, metadata, and entity reads", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -219,6 +431,32 @@ test("lbb_inspect consolidates guide, ontology, metadata, and entity reads", asy
     assert.equal(removed.isError, true, `${action} must be rejected`);
   }
   assert.equal(calls.length, 5, "a removed action sends no request");
+
+  // The server reads a record at a commit; a valid-time instant is refused
+  // before any request, with the commit pin named.
+  const validTime = await client.callTool({
+    name: "lbb_inspect",
+    arguments: {
+      action: "entity",
+      entity_type: "Person",
+      name: "Ada",
+      as_of: "2026-09-12T00:00:00Z",
+    },
+  });
+  assert.equal(validTime.isError, true);
+  assert.match(JSON.stringify(validTime.content), /as_of_commit_seq/);
+  assert.equal(calls.length, 5, "a refused as_of sends no request");
+  await client.callTool({
+    name: "lbb_inspect",
+    arguments: {
+      action: "entity",
+      entity_type: "Person",
+      name: "Ada",
+      as_of_commit_seq: 4,
+    },
+  });
+  assert.match(calls[5].input, /as_of_commit_seq=4/);
+  assert.doesNotMatch(calls[5].input, /[?&]as_of=/);
   await client.close();
 });
 
@@ -1270,6 +1508,14 @@ test("search tools route to the embeddings and search API", async () => {
       { via: "calls", to: "payment-service", direction: "out" },
     ]);
     assert.equal(last().body.explain, true);
+    assert.equal("rerank" in last().body, false, "no rerank unless asked");
+
+    // A search that asks for the rerank sends it.
+    await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "search", text: "fraud checks", rerank: true },
+    });
+    assert.equal(last().body.rerank, true);
   } finally {
     await client.close();
   }
