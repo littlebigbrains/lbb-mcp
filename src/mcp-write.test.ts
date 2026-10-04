@@ -584,3 +584,74 @@ test("lbb_inspect ontology_suggestions lists by status", async () => {
   assert.equal(calls[0].init.method, "GET");
   await client.close();
 });
+
+test("lbb_evals review_check agrees with the judge or corrects it", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({
+      call: "c1",
+      truth: { verdict: "wrong", score: 0, by: "person" },
+    });
+  };
+  const client = await connect(fetch);
+
+  const agreed = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "review_check", call_id: "c1", agree: true },
+  });
+  const corrected = await client.callTool({
+    name: "lbb_evals",
+    arguments: {
+      action: "review_check",
+      call_id: "c1",
+      agree: false,
+      verdict: "wrong",
+      reference: { grades: { "https://x.test/e/a": 0 } },
+      note: "The user confirmed: the hits are about returns.",
+      graph: "crm",
+    },
+  });
+
+  assert.notEqual(agreed.isError, true);
+  assert.notEqual(corrected.isError, true);
+  const [first, second] = calls.map((call) => new URL(call.input));
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(first.pathname, "/v1/models/checks/review");
+  assert.deepEqual(Object.fromEntries(first.searchParams), {
+    graph: "g",
+    id: "c1",
+  });
+  assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), { agree: true });
+  assert.equal(second.searchParams.get("graph"), "crm");
+  assert.deepEqual(JSON.parse(calls[1].init.body ?? "{}"), {
+    agree: false,
+    verdict: "wrong",
+    reference: { grades: { "https://x.test/e/a": 0 } },
+    note: "The user confirmed: the hits are about returns.",
+  });
+  await client.close();
+});
+
+test("lbb_evals review_check refuses an incomplete review before any request", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({});
+  });
+  for (const args of [
+    { agree: true },
+    { call_id: "c1" },
+    { call_id: "c1", agree: false },
+    { call_id: "c1", agree: true, verdict: "wrong" },
+    { call_id: "c1", agree: false, verdict: "wrong", score: 2 },
+  ]) {
+    const result = await client.callTool({
+      name: "lbb_evals",
+      arguments: { action: "review_check", ...args },
+    });
+    assert.equal(result.isError, true, JSON.stringify(args));
+  }
+  assert.equal(calls.length, 0);
+  await client.close();
+});

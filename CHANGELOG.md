@@ -2,6 +2,46 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- Require `@littlebigbrain/client` ^0.19.0.
+- `lbb_query` with `mode: "sparql"` returns the `search` report of a query
+  that searches by meaning with a `search:similarTo` pattern: the plan, the
+  hits asked for and bound, and `complete`. When `complete` is false, `notes`
+  says so. The `query` argument describes the pattern with an example.
+- Add `activity` to `lbb_models`. It reads one month of the stack's
+  managed-model use (`month`, `yyyy-mm`; the current month by default): calls,
+  items, estimated tokens and cost per feature and model, by day and by
+  graph, and the model each feature uses now.
+- `lbb_inspect` with `action: "entity"` refuses a valid-time `as_of` before
+  any request and names `as_of_commit_seq`. It sent `as_of` to the server,
+  which answers it with 400.
+- Needs the next `@littlebigbrain/client` release (after 0.18.0): its
+  `SparqlTextResponse` type has `search`, and `entityDetail` has no `asOf`.
+- `lbb_query mode=search` takes `rerank`: `true` orders the best hits by the
+  managed rerank model (Jev), each hit with its `relevance`; `false` keeps
+  the similarity order. Without it the graph's search setting decides.
+- Add `mode: "question"` to `lbb_query`, for an app or agent that has a
+  question in plain words and no SPARQL query. It takes `question` and
+  optional `context`, `route`, `limit` and `run` (default `true`), and calls
+  `POST /v1/query/rewrite`. The result holds the route (`kind`, `confidence`,
+  `by`), the rationale, the SPARQL query and its entailment, the rows, the
+  `error` and the eval `trace_id`. The rows are bounded as in `mode: "sparql"`,
+  and `next` continues the same query with `mode: "sparql"` at the commit the
+  run read. A failed call is not retried, because each call uses model tokens.
+- Add the model checks to `lbb_evals`. `checks_summary` reads a month of the
+  graph's checks per job and model, and the judge's agreement with people
+  (`month`, `yyyy-mm`; the current month by default). `checks` lists the
+  month's checks, newest first, with the judge's verdict, score and reason
+  and the ground truth; `job`, `verdict` and `reviewed` filter, and `after`
+  pages. `review_check` records a person's review of one check (`call_id`):
+  `agree: true` keeps the judge's verdict, and `agree: false` with `verdict`
+  and an optional `score`, `reference` and `note` corrects it. The review
+  becomes the call's ground truth, so the tool tells the agent to review only
+  what the user confirmed. An incomplete review sends no request. These
+  actions need the next `@littlebigbrain/client` release: its `checks`
+  namespace.
+
 ## 0.8.1 (2026-10-03)
 
 - `suggest_ontology_change` takes up to 128 operations in `change`, the same
