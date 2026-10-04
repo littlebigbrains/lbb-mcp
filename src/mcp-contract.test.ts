@@ -56,6 +56,33 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     /littlebigbrain\.com\/r\/NAME/,
   );
   assert.match(byName.lbb_query.description ?? "", /content-addressed/);
+  // SPARQL text teaches the search pattern, and lbb_models reads activity.
+  const queryText = (
+    byName.lbb_query.inputSchema as {
+      properties: Record<string, { description?: string }>;
+    }
+  ).properties.query.description;
+  assert.match(queryText ?? "", /search:similarTo/);
+  assert.match(queryText ?? "", /search field reports the plan/);
+  const modelActions = (
+    byName.lbb_models.inputSchema as {
+      properties: Record<string, { enum?: string[] }>;
+    }
+  ).properties.action.enum;
+  assert.ok(modelActions?.includes("activity"));
+  // lbb_evals reads the model checks and lets an agent correct one.
+  const evalActions = (
+    byName.lbb_evals.inputSchema as {
+      properties: Record<string, { enum?: string[] }>;
+    }
+  ).properties.action.enum;
+  for (const action of ["checks_summary", "checks", "review_check"]) {
+    assert.ok(evalActions?.includes(action), action);
+  }
+  assert.match(
+    byName.lbb_evals.description ?? "",
+    /review only what the user confirmed/,
+  );
   await client.close();
 });
 
@@ -95,7 +122,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "a6f6948ba0109c906e3a3e95f5adb2fc8120df31b6b7059951b883c8d64d0094",
+    "86be8de93aabd126b6c13d1a037c02eb467ed91b0e607d4460866aca5a3466d0",
   );
   await client.close();
 });
@@ -157,6 +184,16 @@ test("dispatch tools advertise real object input schemas (regression: object arg
   const query = schemaOf("lbb_query");
   assert.ok(query.properties.mode?.enum?.includes("structured"));
   assert.equal(query.properties.body?.type, "object");
+  assert.ok(query.properties.mode?.enum?.includes("question"));
+  assert.equal(query.properties.question?.type, "string");
+  assert.deepEqual(query.properties.route?.enum, [
+    "lookup",
+    "aggregate",
+    "search",
+    "history",
+    "schema",
+    "unanswerable",
+  ]);
 
   const configure = schemaOf("lbb_configure");
   assert.ok(configure.properties.action?.enum?.includes("evolve_ontology"));

@@ -104,6 +104,22 @@ The result contains one row on a fresh graph:
 The query follows a stored relationship to its database label. Strong consistency
 lets it read the import without waiting for a background index job.
 
+An agent without a SPARQL query can pass the question in plain words:
+
+```json
+{
+  "mode": "question",
+  "graph": "quickstart",
+  "question": "Which database does Auth Service write to?"
+}
+```
+
+The server selects the kind of query, writes the SPARQL query from a
+description of the graph, checks it, and runs it. The result holds the route,
+the rationale, the query, and its rows. `next` continues the same query with
+`mode: "sparql"`. Each question uses model tokens and counts toward a daily
+limit of the stack, so the tool does not retry a failed call.
+
 For your own data, start with `lbb_inspect` using `action: "guide"` or
 `action: "ontology"`. Imported Resource Description Framework (RDF) data keeps
 its original identifiers; inspect it with SPARQL when choosing query predicates.
@@ -113,15 +129,15 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | Tool | Purpose |
 | --- | --- |
 | `lbb_inspect` | Read the schema, graph status, and entities. |
-| `lbb_query` | Run SPARQL queries, search by meaning, or request summary statistics. |
+| `lbb_query` | Ask a question in plain words, run SPARQL queries, search by meaning (also inside a SPARQL query with `search:similarTo`), or request summary statistics. |
 | `lbb_rdf` | Import RDF documents or add facts with SPARQL `INSERT DATA`. |
 | `lbb_embeddings` | Inspect search setup and preview the text to embed. |
 | `lbb_embeddings_manage` | Set up or refresh embeddings, or change the embedding model. |
 | `lbb_embeddings_delete` | Delete an embedding and its stored vectors. |
 | `lbb_commit` | Write or retract JSON facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), or publish validation rules. |
-| `lbb_evals` | Label query results and check whether later queries return the expected answers. |
-| `lbb_models` | Compare retrieval settings and read model training datasets. |
+| `lbb_evals` | Label query results and check whether later queries return the expected answers. Read the model checks of a graph, and agree with or correct a check that the user confirmed. |
+| `lbb_models` | Compare retrieval settings, read model training datasets, or read a month of managed-model activity. |
 
 See [search by meaning](https://docs.littlebigbrain.com/guides/search-by-meaning/)
 for embedding setup. To define constraints with the Shapes Constraint Language

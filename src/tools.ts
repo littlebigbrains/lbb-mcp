@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LbbClient } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
+import { answerQuestion, type QuestionArgs } from "./question.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
@@ -19,6 +20,7 @@ import {
   queryInputSchema,
   queryWireSchema,
   searchFeedbackSchema,
+  yearMonthSchema,
   type QueryCursor,
 } from "./tool-contracts.js";
 import {
@@ -96,6 +98,11 @@ export function registerLbbTools(
               limit: args.limit ?? 50,
             });
           case "entity":
+            if (args.as_of !== undefined) {
+              throw new Error(
+                "entity valid-time as_of is not supported; use as_of_commit_seq for a retained commit snapshot",
+              );
+            }
             return target.entityDetail({
               ...(args.entity_id
                 ? { id: args.entity_id }
@@ -103,7 +110,6 @@ export function registerLbbTools(
                     type: requireString(args.entity_type, "entity_type"),
                     name: requireString(args.name, "name"),
                   }),
-              asOf: args.as_of,
               asOfCommitSeq: args.as_of_commit_seq,
             });
         }
@@ -115,7 +121,7 @@ export function registerLbbTools(
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze. SPARQL is the query language; search finds what the words describe. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze. Use mode=question when you have a question in plain words and no SPARQL query: the server selects the kind of query (route), writes the SPARQL query from a description of the graph, checks it, runs it, and returns the route, the rationale, the query and its rows. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -166,6 +172,7 @@ export function registerLbbTools(
               next: Record<string, unknown> | undefined,
               cursorBase: Omit<QueryCursor, "offset">,
               notes?: string[],
+              extra?: Record<string, unknown>,
             ) =>
               timing.measure("query_envelope", () => {
                 timing.counts({ received_rows: rowPage?.returned });
@@ -176,7 +183,7 @@ export function registerLbbTools(
                   rowPage,
                   next,
                   cursorBase,
-                  { textFormat: options.queryTextFormat, notes },
+                  { textFormat: options.queryTextFormat, notes, extra },
                 );
                 if (options.timing) {
                   const nextCursor = (
@@ -384,6 +391,14 @@ export function registerLbbTools(
                 `eval trace ${response.trace_id}: to label rows, read their item ids with lbb_evals action=trace trace_id=${response.trace_id}, then call lbb_evals action=label trace_id=${response.trace_id} item=<id> valid=true|false (or items=[…]).`,
               );
             }
+            // A query with a search:similarTo pattern reports how the search
+            // ran; keep that report whole next to the rows.
+            const search = response.search ?? undefined;
+            if (search && !search.complete) {
+              notes.push(
+                `search bound ${search.hits} of the ${search.top} hits asked for (complete: false): fewer entities satisfy the rest of the query among the candidates the search may score. When at most 20,000 entities match the other patterns, the search scores every match.`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
@@ -407,8 +422,23 @@ export function registerLbbTools(
               next,
               cursorBase,
               notes,
+              search ? { search } : undefined,
             );
             return render(sparqlEnvelope);
+          } catch (error) {
+            return errorResult(await enrichError(client, error));
+          }
+        })();
+      }
+      if (args.mode === "question") {
+        const questionArgs = args as QuestionArgs;
+        return (async () => {
+          try {
+            return await answerQuestion(
+              client,
+              questionArgs,
+              options.queryTextFormat,
+            );
           } catch (error) {
             return errorResult(await enrichError(client, error));
           }
@@ -429,6 +459,7 @@ export function registerLbbTools(
             request: searchArgs.request,
             filter: searchArgs.filter,
             explain: searchArgs.explain,
+            rerank: searchArgs.rerank,
           });
         });
       }
@@ -450,18 +481,28 @@ export function registerLbbTools(
     "lbb_models",
     {
       description:
-        "Read model-training inputs or compare retrieval configurations over one pinned published snapshot. shadow_eval takes the API ShadowEvalRequest body; dataset actions return bounded training examples at an optional signal split.",
+        "Read model-training inputs or compare retrieval configurations over one pinned published snapshot, or read what the managed models did. shadow_eval takes the API ShadowEvalRequest body; dataset actions return bounded training examples at an optional signal split. activity reads one month of the stack's model use (all graphs): calls, items, estimated tokens and cost per feature (index, search, fit, judge, training) and model, by day and by graph, the months with activity, and the model each feature uses now.",
       inputSchema: {
-        action: z.enum(["shadow_eval", "suggest_dataset", "extractor_dataset"]),
+        action: z.enum([
+          "shadow_eval",
+          "suggest_dataset",
+          "extractor_dataset",
+          "activity",
+        ]),
         body: jsonObjectSchema.optional(),
         limit: z.number().int().positive().optional(),
         split_seq: z.number().int().nonnegative().optional(),
+        month: yearMonthSchema
+          .optional()
+          .describe(
+            "activity: the month, yyyy-mm (UTC). Defaults to the current month.",
+          ),
         detail: detailSchema,
         ...graphScope,
       },
       annotations: READ_ONLY,
     },
-    ({ action, body, limit, split_seq, detail, graph }) =>
+    ({ action, body, limit, split_seq, month, detail, graph }) =>
       run(client, `lbb_models.${action}`, detail, () => {
         const target = scoped(client, graph);
         switch (action) {
@@ -472,6 +513,8 @@ export function registerLbbTools(
             return target.suggestDataset({ limit, splitSeq: split_seq });
           case "extractor_dataset":
             return target.extractorDataset({ limit, splitSeq: split_seq });
+          case "activity":
+            return target.modelActivity({ month });
         }
       }),
   );
@@ -623,7 +666,7 @@ export function registerLbbTools(
     "lbb_evals",
     {
       description:
-        "Managed evals: the thumbs up / thumbs down of the graph, per result. A query run with `request` (lbb_query) records a trace with one item per result (hit or row); trace reads it back with the item ids. label marks one result (item + valid) or several (items) relevant or not; the labels become the golden's ground truth. golden freezes a query (every result it returns now is relevant). run replays every golden at the current commit: pass when every relevant result is back and no wrong one is; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state.",
+        "Managed evals: the thumbs up / thumbs down of the graph, per result. A query run with `request` (lbb_query) records a trace with one item per result (hit or row); trace reads it back with the item ids. label marks one result (item + valid) or several (items) relevant or not; the labels become the golden's ground truth. golden freezes a query (every result it returns now is relevant). run replays every golden at the current commit: pass when every relevant result is back and no wrong one is; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -638,6 +681,9 @@ export function registerLbbTools(
           "run",
           "results",
           "settings",
+          "checks_summary",
+          "checks",
+          "review_check",
         ]),
         trace_id: z
           .string()
@@ -671,7 +717,12 @@ export function registerLbbTools(
           .string()
           .optional()
           .describe("label: who labels (an agent name)."),
-        note: z.string().optional(),
+        note: z
+          .string()
+          .optional()
+          .describe(
+            "label / review_check: why. review_check: at most 2,000 characters.",
+          ),
         sparql: z
           .string()
           .optional()
@@ -714,6 +765,54 @@ export function registerLbbTools(
           .describe(
             "run / accept: strong reads the head, eventual the last published commit.",
           ),
+        month: yearMonthSchema
+          .optional()
+          .describe(
+            "checks_summary / checks: the month, yyyy-mm (UTC). Defaults to the current month.",
+          ),
+        job: z
+          .enum(["rerank", "route", "rewrite", "fit", "propose", "label"])
+          .optional()
+          .describe("checks: only the checks of one job."),
+        verdict: z
+          .enum(["right", "partly", "wrong"])
+          .optional()
+          .describe(
+            "checks: only the checks whose ground truth has this verdict. review_check with agree=false: the right verdict.",
+          ),
+        reviewed: z
+          .boolean()
+          .optional()
+          .describe(
+            "checks: true = only the checks a person reviewed, false = only the others.",
+          ),
+        after: z
+          .string()
+          .optional()
+          .describe("checks: the next_after of the previous page."),
+        call_id: z
+          .string()
+          .optional()
+          .describe("review_check: the check's `call` id, from checks."),
+        agree: z
+          .boolean()
+          .optional()
+          .describe(
+            "review_check: true = the judge is right, false = correct it with verdict.",
+          ),
+        score: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            "review_check with agree=false: the right score, 0 to 1. Omit for the judge's score of that verdict.",
+          ),
+        reference: jsonObjectSchema
+          .optional()
+          .describe(
+            'review_check with agree=false: the right answer. A rerank or label check: {"grades": {"<hit id>": 0..3}}; a route or fit check: {"picks": {"<question id>": "<option>"}}.',
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -736,6 +835,15 @@ export function registerLbbTools(
       limit,
       unlabeled,
       consistency,
+      month,
+      job,
+      verdict,
+      reviewed,
+      after,
+      call_id,
+      agree,
+      score,
+      reference,
       detail,
       graph,
     }) =>
@@ -788,6 +896,39 @@ export function registerLbbTools(
             return target.evals.results({ limit });
           case "settings":
             return target.evals.settings();
+          case "checks_summary":
+            return target.checks.summary({ month });
+          case "checks":
+            return target.checks.list({
+              job,
+              month,
+              verdict,
+              reviewed,
+              after,
+              limit,
+            });
+          case "review_check":
+            if (!call_id) throw new Error("review_check requires call_id");
+            if (agree === undefined)
+              throw new Error("review_check requires agree");
+            if (
+              agree &&
+              (verdict !== undefined ||
+                score !== undefined ||
+                reference !== undefined)
+            )
+              throw new Error(
+                "review_check with agree=true takes no verdict, score or reference",
+              );
+            if (!agree && !verdict)
+              throw new Error("review_check with agree=false requires verdict");
+            return target.checks.review(call_id, {
+              agree,
+              ...(verdict ? { verdict } : {}),
+              ...(score !== undefined ? { score } : {}),
+              ...(reference ? { reference } : {}),
+              ...(note ? { note } : {}),
+            });
         }
       }),
   );
