@@ -490,6 +490,18 @@ export const SPARQL_IRI_GUIDE =
 export const SPARQL_SEARCH_GUIDE =
   'Search by meaning inside the query (the graph needs an embedding; see lbb_embeddings action=list): PREFIX search: <https://littlebigbrain.com/search#> SELECT ?x ?score WHERE { ?x search:similarTo "card payments" ; search:score ?score . ?x <https://littlebigbrain.com/r/calls> ?y } ORDER BY DESC(?score) LIMIT 5. The other patterns filter and join the hits. One search:similarTo per query, with a variable subject, in the main group (not inside OPTIONAL, UNION, MINUS or a subquery). The object is text, an entity IRI (records like that one) or a vector literal. search:top N sets the hits (1 to 1000; default the query LIMIT, then 10) and search:embedding "name" searches one embedding. FILTER(?score > 0.8) keeps close hits. The result\'s search field reports the plan (nearest, filter_first or search_first), the hits and complete. For a question in words, add search:rerank true ; search:relevance ?r and ORDER BY DESC(?r): the rerank model (Jev) reads the best hits with the text, keeps the top that answer it and binds its answer (0 to 1); search.rerank reports the status. Only a text query reranks.';
 
+/** One point of `lbb_query mode=compare`: a commit, a date or a moment. */
+const comparePointSchema = z
+  .object({
+    as_of_commit_seq: z.number().int().min(0).optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .optional(),
+    moment: z.string().optional(),
+  })
+  .strict();
+
 export const queryInputSchema: z.ZodDiscriminatedUnion<
   "mode",
   z.AnyZodObject[]
@@ -544,7 +556,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .optional()
         .describe(
-          `SPARQL 1.1 query text (SELECT or ASK). Valid-time as_of is unsupported; use as_of_commit_seq for a retained commit snapshot. ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10. ${SPARQL_SEARCH_GUIDE}`,
+          `SPARQL 1.1 query text (SELECT or ASK). Valid-time as_of is unsupported; use as_of_commit_seq for a retained commit snapshot. ${SPARQL_IRI_GUIDE} Example: SELECT ?service ?db WHERE { ?service <https://littlebigbrain.com/r/writes_to> ?db } LIMIT 10. ${SPARQL_SEARCH_GUIDE} compare: the SELECT to run at both points; leave out LIMIT.`,
         ),
       // Kept for an actionable error when an older connector sends this field.
       as_of: z
@@ -577,7 +589,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .min(1)
         .describe(
-          "question: the question in plain words (required), 1 to 4,000 characters. The server writes the SPARQL query from a description of this graph, checks it, and runs it.",
+          "question: the question in plain words (required), 1 to 4,000 characters. The server writes the SPARQL query from a description of this graph, checks it, and runs it. describe: the question whose classes and properties to describe.",
         ),
       context: z
         .string()
@@ -605,7 +617,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .max(QUESTION_MAX_ROWS)
         .optional()
         .describe(
-          "question: rows the run returns, 1 to 1,000. Defaults by detail: compact=20, standard=100, full=1000.",
+          "question: rows the run returns, 1 to 1,000. Defaults by detail: compact=20, standard=100, full=1000. names: candidates per name, 1 to 10 (default 5). compare: entries of each list per page, 1 to 1,000 (defaults by detail: 20, 100, 500).",
         ),
       run: z
         .boolean()
@@ -664,7 +676,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .optional()
         .describe(
-          "The query text (required); embedded with the graph's model.",
+          "search: the query text (required); embedded with the graph's model. names: the question, or the names, to find (required).",
         ),
       top_k: z.number().int().positive().max(200).optional(),
       probe: z
@@ -746,6 +758,96 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
       query: z.string().optional(),
       field: z.string().optional(),
       sparql: jsonObjectSchema.optional(),
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("names"),
+      text: z
+        .string()
+        .min(1)
+        .max(4_000)
+        .describe("names: the question, or the names, to find (required)."),
+      limit: z.number().int().min(1).max(10).optional(),
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("describe"),
+      question: z.string().max(4_000).optional(),
+      classes: z
+        .array(z.string().min(1))
+        .max(20)
+        .optional()
+        .describe("describe: class IRIs to describe, at most 20."),
+      properties: z
+        .array(z.string().min(1))
+        .max(50)
+        .optional()
+        .describe("describe: property IRIs to describe, at most 50."),
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("commit_at"),
+      date: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional()
+        .describe(
+          "commit_at: YYYY-MM-DD; the last commit written by the end of that day (UTC).",
+        ),
+      moment: z
+        .string()
+        .optional()
+        .describe(
+          "commit_at: RFC 3339, e.g. 2026-06-18T12:00:00Z; the last commit written at or before it.",
+        ),
+      ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("compare"),
+      query: z
+        .string()
+        .min(1)
+        .describe(
+          "compare: the SELECT to run at both points. Leave out LIMIT: the server reads up to max_rows rows a point, page by page.",
+        ),
+      before: comparePointSchema.describe(
+        'compare: the earlier point (required): {"as_of_commit_seq": n}, {"date": "YYYY-MM-DD"} or {"moment": "RFC 3339"}.',
+      ),
+      after: comparePointSchema
+        .optional()
+        .describe("compare: the later point; defaults to the latest commit."),
+      key: z
+        .array(z.string().min(1))
+        .max(8)
+        .optional()
+        .describe(
+          'compare: the variables that identify a row\'s entity, e.g. ["contact"]. With a key the rows are paired: added and removed hold the entities at one point only, changed the entities whose values differ. Without one whole rows are compared.',
+        ),
+      entailment: z.enum(["none", "subclass", "rdfs", "owl"]).optional(),
+      max_rows: z
+        .number()
+        .int()
+        .min(1)
+        .max(50_000)
+        .optional()
+        .describe(
+          "compare: rows to read per point, 1 to 50,000 (default 20,000). Past it the result says truncated.",
+        ),
+      limit: z.number().int().min(1).max(1_000).optional(),
+      compare_cursor: z
+        .string()
+        .optional()
+        .describe(
+          "compare: the cursor of the page before, from next; pass it with the same arguments.",
+        ),
       ...readScope,
     })
     .strict(),

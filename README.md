@@ -141,7 +141,7 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | Tool | Purpose |
 | --- | --- |
 | `lbb_inspect` | Read the schema, graph status, and entities. |
-| `lbb_query` | Ask a question in plain words, run SPARQL queries, search by meaning (also inside a SPARQL query with `search:similarTo`), or request summary statistics. |
+| `lbb_query` | Ask a question in plain words, run SPARQL queries, search by meaning (also inside a SPARQL query with `search:similarTo`), or request summary statistics. Four modes help an agent write its own queries: `names` (the IRIs of the names in a text), `describe` (the classes and properties a question needs, with how many instances hold each property and the values of small classes), `commit_at` (the commit of a date) and `compare` (one query at two points, the rows paired by entity). |
 | `lbb_rdf` | Import RDF documents or add facts with SPARQL `INSERT DATA`. |
 | `lbb_embeddings` | Inspect search setup and preview the text to embed. |
 | `lbb_embeddings_manage` | Set up or refresh embeddings, or change the embedding model. |

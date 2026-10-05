@@ -2,6 +2,24 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_query` gains four modes for writing your own queries, none of which
+  calls a model. `names` (`text`, `limit`) finds the IRIs of the names in a
+  text, the person before a document that has the person's name. `describe`
+  (`question`, or `classes` and `properties` as IRIs) returns the server's
+  description of the parts of the graph a question needs: how many sampled
+  instances hold each property, and the values of small classes; `detail:
+  "full"` adds it as JSON. `commit_at` (`date` or `moment`) finds the commit of
+  a date. `compare` (`query`, `before`, `after`, `key`, `max_rows`, `limit`)
+  runs one `SELECT` at two points and returns `added`, `removed` and
+  `changed` as lexical rows with their `totals`; `next` holds the arguments
+  of the next page (`compare_cursor`).
+- `lbb_query` with `mode: "question"` keeps a comparison's `history.added`,
+  `history.removed` and `history.changed` with `history.totals`. Each list
+  shows at most 20, 100 or 500 entries by detail; `history.shown` and a note
+  say when a list is cut and how to read it all with `mode=compare`.
+
 ## 0.10.0 (2026-10-05)
 
 - Require `@littlebigbrain/client` ^0.20.0.
