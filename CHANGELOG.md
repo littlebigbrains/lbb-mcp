@@ -2,6 +2,13 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_query` with `mode: "sparql"` describes the SPARQL rerank:
+  `search:rerank true ; search:relevance ?r` lets the rerank model (Jev) keep
+  the hits that answer the words and binds its answer. When the rerank of a
+  query does not apply, `notes` says why and that the relevance is unbound.
+
 ## 0.9.0 (2026-10-04)
 
 - Require `@littlebigbrain/client` ^0.19.0.

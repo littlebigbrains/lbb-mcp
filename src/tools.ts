@@ -399,6 +399,12 @@ export function registerLbbTools(
                 `search bound ${search.hits} of the ${search.top} hits asked for (complete: false): fewer entities satisfy the rest of the query among the candidates the search may score. When at most 20,000 entities match the other patterns, the search scores every match.`,
               );
             }
+            const rerank = search?.rerank ?? undefined;
+            if (rerank && rerank.status !== "applied") {
+              notes.push(
+                `search:rerank did not apply (${rerank.status}${rerank.error ? `: ${rerank.error}` : ""}): the rows hold the most similar hits, and the relevance variable is unbound.`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
