@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { type FetchLike } from "@littlebigbrain/client";
+import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { connect, ok, payload, type Call } from "./test-support.js";
 
 const SPARQL =
@@ -228,6 +229,54 @@ test("lbb_query mode=question bounds the rows and continues the query with mode=
   }
 });
 
+test("lbb_query mode=question sends the anchors and returns the linked names", async () => {
+  const link = {
+    text: "Quelmann",
+    iri: "https://x.test/e/quellmann",
+    label: "Quellmann Fenstertechnik GmbH",
+    class: "https://x.test/class/firm",
+    score: 0.82,
+    by: "fuzzy",
+  };
+  const anchor = {
+    iri: "https://x.test/e/nope",
+    found: false,
+    note: "not in the graph at the latest commit",
+  };
+  const { fetch, calls } = recorder([
+    rewrite({ linked: [link], anchors: [anchor] }),
+  ]);
+  const client = await connect(fetch);
+  try {
+    const result = await client.callTool({
+      name: "lbb_query",
+      arguments: {
+        mode: "question",
+        question: "Show me everything about Quelmann.",
+        anchor: ["https://x.test/e/nope"],
+        run: false,
+      },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+      question: "Show me everything about Quelmann.",
+      run: false,
+      anchor: ["https://x.test/e/nope"],
+    });
+    const body = payload(result) as ReturnType<typeof payload> & {
+      notes?: string[];
+    };
+    const data = body.data as { linked: unknown[]; anchors: unknown[] };
+    assert.deepEqual(data.linked, [link]);
+    assert.deepEqual(data.anchors, [anchor]);
+    assert.deepEqual(body.notes, [
+      "anchor https://x.test/e/nope: not in the graph at the latest commit.",
+    ]);
+  } finally {
+    await client.close();
+  }
+});
+
 test("lbb_query mode=question run=false returns the whole query without rows", async () => {
   const longSparql = `${SPARQL} # ${"comment ".repeat(80)}`;
   const { fetch, calls } = recorder([
@@ -360,6 +409,11 @@ test("lbb_query mode=question does not retry a failed call and checks its argume
       { mode: "question", question: "q", limit: 1_001 },
       { mode: "question", question: "q", route: "guess" },
       { mode: "question", question: "q", query: "ASK {}" },
+      {
+        mode: "question",
+        question: "q",
+        anchor: Array.from({ length: 11 }, (_, i) => `https://x.test/e/${i}`),
+      },
     ]) {
       const refused = await client.callTool({
         name: "lbb_query",
@@ -368,6 +422,187 @@ test("lbb_query mode=question does not retry a failed call and checks its argume
       assert.equal(refused.isError, true, JSON.stringify(args));
     }
     assert.equal(calls.length, 1, "invalid arguments send no request");
+  } finally {
+    await client.close();
+  }
+});
+
+const LONG_ERROR = `unknown prefix ex: ${"x".repeat(300)}`;
+
+/** A streamed rewrite as the server sends it, in chunks of 5 bytes. */
+function streamed(events: [string, unknown][]): Awaited<ReturnType<FetchLike>> {
+  const text = events
+    .map(
+      ([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+    )
+    .join(": keep-alive\n\n");
+  const bytes = new TextEncoder().encode(text);
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === "content-type" ? "text/event-stream" : null,
+    },
+    text: async () => text,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let offset = 0; offset < bytes.length; offset += 5) {
+          controller.enqueue(bytes.subarray(offset, offset + 5));
+        }
+        controller.close();
+      },
+    }),
+  };
+}
+
+function progressEvents(done: unknown): [string, unknown][] {
+  return [
+    ["grounding", { cached: true, age_ms: 5, classes: 3 }],
+    ["route", { kind: "lookup", confidence: 0.92, by: "router" }],
+    ["query", { sparql: "SELECT ?x", entailment: "none", attempt: 1 }],
+    ["run", { as_of_commit_seq: null }],
+    ["repair", { error: LONG_ERROR, attempt: 2 }],
+    ["answer.delta", { text: "a later event" }],
+    ["query", { sparql: SPARQL, entailment: "subclass", attempt: 2 }],
+    ["run", { as_of_commit_seq: 9 }],
+    ["rows", { count: 2, ms: 85 }],
+    ["done", done],
+  ];
+}
+
+test("lbb_query mode=question with a progress token reports each step and returns the same result", async () => {
+  const response = rewrite({ result: run(["Auth Service", "Billing"]) });
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return init?.headers?.accept === "text/event-stream"
+      ? streamed(progressEvents(response))
+      : ok(response);
+  };
+  const client = await connect(fetch);
+  try {
+    const args = {
+      mode: "question",
+      question: "Which services exist?",
+      route: "lookup",
+    };
+    const progress: { progress: number; message?: string }[] = [];
+    const withProgress = await client.callTool(
+      { name: "lbb_query", arguments: args },
+      undefined,
+      {
+        onprogress: ({ progress: step, message }) => {
+          progress.push({ progress: step, message });
+        },
+      },
+    );
+    assert.notEqual(withProgress.isError, true, JSON.stringify(withProgress));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input, "http://h/v1/query/rewrite?graph=g");
+    assert.equal(calls[0].init.headers?.accept, "text/event-stream");
+    assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+      question: "Which services exist?",
+      route: "lookup",
+      run: true,
+      limit: 20,
+    });
+    assert.deepEqual(progress, [
+      { progress: 1, message: "Read the graph description" },
+      { progress: 2, message: "Route: lookup (router, 0.92)" },
+      { progress: 3, message: "Wrote query 1" },
+      { progress: 4, message: "Running the query" },
+      {
+        progress: 5,
+        message: `Correcting the query: ${LONG_ERROR.slice(0, 199)}…`,
+      },
+      { progress: 6, message: "Wrote query 2" },
+      { progress: 7, message: "Running the query" },
+      { progress: 8, message: "2 rows in 85 ms" },
+    ]);
+
+    const without = await client.callTool({
+      name: "lbb_query",
+      arguments: args,
+    });
+    assert.equal(calls.length, 2);
+    assert.equal(
+      calls[1].init.headers?.accept,
+      undefined,
+      "no stream without a token",
+    );
+    assert.deepEqual(withProgress, without, "the stream changes no result");
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_query mode=question sends no progress without a token", async () => {
+  const { fetch, calls } = recorder([rewrite({ result: run(["Billing"]) })]);
+  const client = await connect(fetch);
+  const notifications: unknown[] = [];
+  client.setNotificationHandler(ProgressNotificationSchema, (notification) => {
+    notifications.push(notification);
+  });
+  try {
+    const result = await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "question", question: "Which services exist?" },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init.headers?.accept, undefined);
+    assert.deepEqual(notifications, []);
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_query mode=question keeps the tool error of a failed stream", async () => {
+  const failure = {
+    status: 503,
+    code: "rewrite_model_unavailable",
+    message: "the query rewriter model did not answer; try again",
+  };
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    if (init?.headers?.accept === "text/event-stream") {
+      return streamed([
+        ["grounding", { cached: true, age_ms: 5, classes: 3 }],
+        ["error", failure],
+      ]);
+    }
+    return {
+      ok: false,
+      status: 503,
+      text: async () =>
+        JSON.stringify({
+          error: {
+            type: "api_error",
+            code: failure.code,
+            message: failure.message,
+          },
+        }),
+    };
+  };
+  const client = await connect(fetch);
+  try {
+    const args = { mode: "question", question: "Which services exist?" };
+    const progress: number[] = [];
+    const streamedError = await client.callTool(
+      { name: "lbb_query", arguments: args },
+      undefined,
+      { onprogress: ({ progress: step }) => void progress.push(step) },
+    );
+    const plainError = await client.callTool({
+      name: "lbb_query",
+      arguments: args,
+    });
+    assert.equal(streamedError.isError, true);
+    assert.deepEqual(progress, [1]);
+    assert.deepEqual(streamedError, plainError);
+    assert.equal(calls.length, 2, "a failed question is not retried");
   } finally {
     await client.close();
   }

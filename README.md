@@ -118,7 +118,15 @@ The server selects the kind of query, writes the SPARQL query from a
 description of the graph, checks it, and runs it. The result holds the route,
 the rationale, the query, and its rows. `next` continues the same query with
 `mode: "sparql"`. Each question uses model tokens and counts toward a daily
-limit of the stack, so the tool does not retry a failed call.
+limit of the stack, so the tool does not retry a failed call. The server finds
+the names in the question in the graph and lists them in `linked`. When the
+question is about records you already know, pass their IRIs in `anchor` (at
+most 10): the query uses them directly.
+
+A question can take some seconds. When the tool call carries a
+`_meta.progressToken`, the server sends a progress notification for each
+step, for example `Route: lookup (router, 0.92)` or `12 rows in 85 ms`. The
+result is the same. Cancel the call to stop the server's work.
 
 For your own data, start with `lbb_inspect` using `action: "guide"` or
 `action: "ontology"`. Imported Resource Description Framework (RDF) data keeps

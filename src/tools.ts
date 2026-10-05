@@ -2,7 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LbbClient } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
-import { answerQuestion, type QuestionArgs } from "./question.js";
+import {
+  answerQuestion,
+  type QuestionArgs,
+  type QuestionProgress,
+} from "./question.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
@@ -125,7 +129,7 @@ export function registerLbbTools(
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
-    (rawArgs) => {
+    (rawArgs, extra) => {
       const parsed = queryInputSchema.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
@@ -399,6 +403,12 @@ export function registerLbbTools(
                 `search bound ${search.hits} of the ${search.top} hits asked for (complete: false): fewer entities satisfy the rest of the query among the candidates the search may score. When at most 20,000 entities match the other patterns, the search scores every match.`,
               );
             }
+            const rerank = search?.rerank ?? undefined;
+            if (rerank && rerank.status !== "applied") {
+              notes.push(
+                `search:rerank did not apply (${rerank.status}${rerank.error ? `: ${rerank.error}` : ""}): the rows hold the most similar hits, and the relevance variable is unbound.`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
@@ -432,12 +442,27 @@ export function registerLbbTools(
       }
       if (args.mode === "question") {
         const questionArgs = args as QuestionArgs;
+        // A call with a progress token gets one notification per step of
+        // the server's work; the result is the same.
+        const progressToken = extra._meta?.progressToken;
+        const progress: QuestionProgress | undefined =
+          progressToken === undefined
+            ? undefined
+            : {
+                signal: extra.signal,
+                report: (progress, message) =>
+                  extra.sendNotification({
+                    method: "notifications/progress",
+                    params: { progressToken, progress, message },
+                  }),
+              };
         return (async () => {
           try {
             return await answerQuestion(
               client,
               questionArgs,
               options.queryTextFormat,
+              progress,
             );
           } catch (error) {
             return errorResult(await enrichError(client, error));

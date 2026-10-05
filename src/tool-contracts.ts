@@ -27,6 +27,9 @@ export const HARD_OUTPUT_CHARS = 80_000;
 export const MAX_QUERY_ROW_LIMIT = 5_000;
 /** The most rows `POST /v1/query/rewrite` returns from a run. */
 export const QUESTION_MAX_ROWS = 1_000;
+/** Entity IRIs one question may anchor, and the characters of one. */
+export const QUESTION_MAX_ANCHORS = 10;
+export const QUESTION_MAX_ANCHOR_CHARS = 2_000;
 export const READ_ONLY = { readOnlyHint: true } as const;
 export const IDEMPOTENT_WRITE = {
   readOnlyHint: false,
@@ -482,7 +485,7 @@ export const SPARQL_IRI_GUIDE =
 // Search by meaning runs inside SPARQL text as a pattern, so an agent can
 // filter and join the hits in one query instead of a search then a lookup.
 export const SPARQL_SEARCH_GUIDE =
-  'Search by meaning inside the query (the graph needs an embedding; see lbb_embeddings action=list): PREFIX search: <https://littlebigbrain.com/search#> SELECT ?x ?score WHERE { ?x search:similarTo "card payments" ; search:score ?score . ?x <https://littlebigbrain.com/r/calls> ?y } ORDER BY DESC(?score) LIMIT 5. The other patterns filter and join the hits. One search:similarTo per query, with a variable subject, in the main group (not inside OPTIONAL, UNION, MINUS or a subquery). The object is text, an entity IRI (records like that one) or a vector literal. search:top N sets the hits (1 to 1000; default the query LIMIT, then 10) and search:embedding "name" searches one embedding. FILTER(?score > 0.8) keeps close hits. The result\'s search field reports the plan (nearest, filter_first or search_first), the hits and complete.';
+  'Search by meaning inside the query (the graph needs an embedding; see lbb_embeddings action=list): PREFIX search: <https://littlebigbrain.com/search#> SELECT ?x ?score WHERE { ?x search:similarTo "card payments" ; search:score ?score . ?x <https://littlebigbrain.com/r/calls> ?y } ORDER BY DESC(?score) LIMIT 5. The other patterns filter and join the hits. One search:similarTo per query, with a variable subject, in the main group (not inside OPTIONAL, UNION, MINUS or a subquery). The object is text, an entity IRI (records like that one) or a vector literal. search:top N sets the hits (1 to 1000; default the query LIMIT, then 10) and search:embedding "name" searches one embedding. FILTER(?score > 0.8) keeps close hits. The result\'s search field reports the plan (nearest, filter_first or search_first), the hits and complete. For a question in words, add search:rerank true ; search:relevance ?r and ORDER BY DESC(?r): the rerank model (Jev) reads the best hits with the text, keeps the top that answer it and binds its answer (0 to 1); search.rerank reports the status. Only a text query reranks.';
 
 export const queryInputSchema: z.ZodDiscriminatedUnion<
   "mode",
@@ -606,6 +609,13 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .optional()
         .describe(
           "question: run the query and return its rows. Defaults to true; false returns the query only.",
+        ),
+      anchor: z
+        .array(z.string().min(1).max(QUESTION_MAX_ANCHOR_CHARS))
+        .max(QUESTION_MAX_ANCHORS)
+        .optional()
+        .describe(
+          "question: entity IRIs the question is about, at most 10 (for example the record the user has open). The server reads each one, and the query uses these IRIs directly instead of matching their names.",
         ),
       ...readScope,
     })

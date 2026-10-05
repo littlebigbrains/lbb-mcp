@@ -2,6 +2,27 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_query` with `mode: "sparql"` describes the SPARQL rerank:
+  `search:rerank true ; search:relevance ?r` lets the rerank model (Jev) keep
+  the hits that answer the words and binds its answer. When the rerank of a
+  query does not apply, `notes` says why and that the relevance is unbound.
+- `lbb_query` with `mode: "question"` reports progress. When the tool call
+  carries `_meta.progressToken`, the tool reads the rewrite as a stream and
+  sends `notifications/progress` for each step: the graph description, the
+  route, each query, the run, the rows, and a correction. The tool result and
+  its errors stay the same. Cancelling the call stops the server's work.
+- Progress needs the next `@littlebigbrain/client` release, which adds
+  `query.rewriteStream`. With an older client the tool answers without
+  progress. A call without a progress token sends the request as before.
+- `lbb_query` with `mode: "question"` takes `anchor`: entity IRIs the
+  question is about, at most 10. The server reads each one, and the query
+  uses the IRIs directly instead of matching their names.
+- The answer holds `linked`, the names of the question the server linked to
+  entities, and `anchors`, what it read about each anchored IRI. An anchor
+  that is not in the graph adds a note.
+
 ## 0.9.0 (2026-10-04)
 
 - Require `@littlebigbrain/client` ^0.19.0.
