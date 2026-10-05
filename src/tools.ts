@@ -2,7 +2,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LbbClient } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
-import { answerQuestion, type QuestionArgs } from "./question.js";
+import {
+  answerQuestion,
+  type QuestionArgs,
+  type QuestionProgress,
+} from "./question.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
@@ -125,7 +129,7 @@ export function registerLbbTools(
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
-    (rawArgs) => {
+    (rawArgs, extra) => {
       const parsed = queryInputSchema.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
@@ -399,6 +403,12 @@ export function registerLbbTools(
                 `search bound ${search.hits} of the ${search.top} hits asked for (complete: false): fewer entities satisfy the rest of the query among the candidates the search may score. When at most 20,000 entities match the other patterns, the search scores every match.`,
               );
             }
+            const rerank = search?.rerank ?? undefined;
+            if (rerank && rerank.status !== "applied") {
+              notes.push(
+                `search:rerank did not apply (${rerank.status}${rerank.error ? `: ${rerank.error}` : ""}): the rows hold the most similar hits, and the relevance variable is unbound.`,
+              );
+            }
             const data = timing.measure("query_results_parse", () =>
               JSON.parse(response.results),
             );
@@ -432,12 +442,27 @@ export function registerLbbTools(
       }
       if (args.mode === "question") {
         const questionArgs = args as QuestionArgs;
+        // A call with a progress token gets one notification per step of
+        // the server's work; the result is the same.
+        const progressToken = extra._meta?.progressToken;
+        const progress: QuestionProgress | undefined =
+          progressToken === undefined
+            ? undefined
+            : {
+                signal: extra.signal,
+                report: (progress, message) =>
+                  extra.sendNotification({
+                    method: "notifications/progress",
+                    params: { progressToken, progress, message },
+                  }),
+              };
         return (async () => {
           try {
             return await answerQuestion(
               client,
               questionArgs,
               options.queryTextFormat,
+              progress,
             );
           } catch (error) {
             return errorResult(await enrichError(client, error));
@@ -1110,7 +1135,7 @@ export function registerLbbTools(
     "lbb_configure",
     {
       description:
-        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions). define, evolve and publish support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
+        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions), get_rewrite_profile and set_rewrite_profile (the graph's notes and up to 20 worked question-to-SPARQL examples that lbb_query mode=question reads for every question; pass the version you read as expected_version). define, evolve, publish and set_rewrite_profile support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
       inputSchema: configureWireSchema,
       annotations: MUTATING,
     },
@@ -1145,6 +1170,21 @@ export function registerLbbTools(
         }
         if (args.action === "list_starters") {
           return scoped(client, args.graph).ontology.starters.list();
+        }
+        if (args.action === "get_rewrite_profile") {
+          return scoped(client, args.graph).query.rewriteProfile();
+        }
+        if (args.action === "set_rewrite_profile") {
+          return scoped(client, args.graph).query.setRewriteProfile(
+            {
+              notes: args.notes ?? "",
+              examples: args.examples ?? [],
+              ...(args.expected_version !== undefined
+                ? { expected_version: args.expected_version }
+                : {}),
+            },
+            { dryRun: args.dry_run },
+          );
         }
         if (args.action === "apply_starter") {
           return scoped(client, args.graph).ontology.starters.apply(

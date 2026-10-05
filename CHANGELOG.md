@@ -2,6 +2,47 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_query` with `mode: "sparql"` describes the SPARQL rerank:
+  `search:rerank true ; search:relevance ?r` lets the rerank model (Jev) keep
+  the hits that answer the words and binds its answer. When the rerank of a
+  query does not apply, `notes` says why and that the relevance is unbound.
+- `lbb_query` with `mode: "question"` reports progress. When the tool call
+  carries `_meta.progressToken`, the tool reads the rewrite as a stream and
+  sends `notifications/progress` for each step: the graph description, the
+  route, each query, the run, the rows, and a correction. The tool result and
+  its errors stay the same. Cancelling the call stops the server's work.
+- Progress needs the next `@littlebigbrain/client` release, which adds
+  `query.rewriteStream`. With an older client the tool answers without
+  progress. A call without a progress token sends the request as before.
+- `lbb_query` with `mode: "question"` takes `anchor`: entity IRIs the
+  question is about, at most 10. The server reads each one, and the query
+  uses the IRIs directly instead of matching their names.
+- The answer holds `linked`, the names of the question the server linked to
+  entities, and `anchors`, what it read about each anchored IRI. An anchor
+  that is not in the graph adds a note.
+- `lbb_configure` gains `get_rewrite_profile` and `set_rewrite_profile`: the
+  graph's notes and up to 20 worked examples that `lbb_query mode=question`
+  reads for every question. `set_rewrite_profile` takes `expected_version`
+  and `dry_run`.
+- `lbb_query` with `mode: "sparql"` describes the SPARQL rerank:
+  `search:rerank true ; search:relevance ?r` lets the rerank model (Jev) keep
+  the hits that answer the words and binds its answer. When the rerank of a
+  query does not apply, `notes` says why and that the relevance is unbound.
+- `lbb_query` with `mode: "question"` takes `timeline`: dated points that
+  stand for the graph's commits (`{date, as_of_commit_seq, label?}`, at most
+  200). A question about a date reads the commit of the latest point on or
+  before it; without a timeline the server reads the last commit written by
+  the end of that day.
+- The answer's `history` names the commit the date resolved to and how
+  (`resolved_by`). For a question that asks what changed it holds `added`
+  and `removed`, the rows that differ, as `{variable: value}`; the rows of
+  the answer are the later run. A note says which commit the server read, or
+  that it could not place the date. The progress of a comparison names the
+  earlier and the later run.
+- The pinned tool-contract digest moves with the new argument.
+
 ## 0.9.0 (2026-10-04)
 
 - Require `@littlebigbrain/client` ^0.19.0.
