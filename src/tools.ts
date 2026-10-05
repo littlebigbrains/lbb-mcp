@@ -737,7 +737,7 @@ export function registerLbbTools(
     "lbb_evals",
     {
       description:
-        "Managed evals: the thumbs up / thumbs down of the graph, per result. A query run with `request` (lbb_query) records a trace with one item per result (hit or row); trace reads it back with the item ids. label marks one result (item + valid) or several (items) relevant or not; the labels become the golden's ground truth. golden freezes a query (every result it returns now is relevant). run replays every golden at the current commit: pass when every relevant result is back and no wrong one is; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results; a search is done again; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -770,7 +770,7 @@ export function registerLbbTools(
           .boolean()
           .optional()
           .describe(
-            "label: true = the result answers the request (thumbs up), false = it does not.",
+            "label: true = the result answers the request (thumbs up), false = it does not. Without item or items, on a question's trace: the whole answer is right (true) or wrong (false).",
           ),
         items: z
           .array(
@@ -798,7 +798,7 @@ export function registerLbbTools(
           .string()
           .optional()
           .describe(
-            "golden: the query to freeze (the search text for surface=search).",
+            "golden: the query to freeze (the search text for surface=search). label: with valid=false and no item, the right query for the question; the server checks and runs it once.",
           ),
         surface: z
           .enum(["sparql", "search"])
@@ -930,13 +930,25 @@ export function registerLbbTools(
             return target.evals.trace(trace_id);
           case "label":
             if (!trace_id) throw new Error("label requires trace_id");
-            if (!item && !items?.length)
-              throw new Error("label requires item (with valid) or items");
             if (item && valid === undefined)
               throw new Error("label requires valid with item");
+            if (!item && !items?.length && valid === undefined)
+              throw new Error(
+                "label requires item (with valid), items, or valid alone for the answer of a question",
+              );
+            if (
+              sparql !== undefined &&
+              (item || items?.length || valid !== false)
+            )
+              throw new Error(
+                "label takes sparql (the right query) only with valid=false and no item",
+              );
             return target.evals.label(trace_id, {
               ...(item ? { item, valid } : {}),
               ...(items?.length ? { items } : {}),
+              // The answer of a question as a whole.
+              ...(!item && !items?.length ? { valid } : {}),
+              ...(sparql !== undefined ? { sparql } : {}),
               by,
               note,
             });

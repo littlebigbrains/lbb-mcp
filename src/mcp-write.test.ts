@@ -585,6 +585,55 @@ test("lbb_inspect ontology_suggestions lists by status", async () => {
   await client.close();
 });
 
+test("lbb_evals label judges one result, or the answer of a question as a whole", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ trace: { trace_id: "t1" }, labeled: 1 });
+  });
+
+  for (const args of [
+    { item: "e:1", valid: true },
+    { valid: true, by: "agent" },
+    { valid: false, sparql: "SELECT ?f WHERE { ?f a <urn:Finding> }" },
+    { valid: false, note: "The user says the answer is wrong." },
+  ]) {
+    const result = await client.callTool({
+      name: "lbb_evals",
+      arguments: { action: "label", trace_id: "t1", ...args },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(args));
+  }
+  assert.equal(new URL(calls[0].input).pathname, "/v1/evals/label");
+  assert.equal(new URL(calls[0].input).searchParams.get("trace"), "t1");
+  assert.deepEqual(
+    calls.map((call) => JSON.parse(call.init.body ?? "{}")),
+    [
+      { item: "e:1", valid: true },
+      { valid: true, by: "agent" },
+      { valid: false, sparql: "SELECT ?f WHERE { ?f a <urn:Finding> }" },
+      { valid: false, note: "The user says the answer is wrong." },
+    ],
+  );
+
+  // A label that names nothing, and a right query outside an answer marked
+  // wrong, stop before any request.
+  for (const args of [
+    {},
+    { item: "e:1" },
+    { valid: true, sparql: "ASK { ?s ?p ?o }" },
+    { item: "e:1", valid: false, sparql: "ASK { ?s ?p ?o }" },
+  ]) {
+    const result = await client.callTool({
+      name: "lbb_evals",
+      arguments: { action: "label", trace_id: "t1", ...args },
+    });
+    assert.equal(result.isError, true, JSON.stringify(args));
+  }
+  assert.equal(calls.length, 4);
+  await client.close();
+});
+
 test("lbb_evals review_check agrees with the judge or corrects it", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
