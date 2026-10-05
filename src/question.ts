@@ -1,4 +1,5 @@
 import type { LbbClient } from "@littlebigbrain/client";
+import { lexicalRow, listLimit, type Term } from "./query-tools.js";
 import { QUESTION_MAX_ROWS, type QueryCursor } from "./tool-contracts.js";
 import {
   defaultRowLimit,
@@ -36,12 +37,21 @@ interface TimelinePoint {
   label?: string;
 }
 
-/** One value of a row, as SPARQL 1.1 Query Results JSON writes it. */
-interface QuestionTerm {
-  type: string;
-  value: string;
-  datatype?: string | null;
-  "xml:lang"?: string | null;
+type QuestionTerm = Term;
+
+/** One entity whose rows differ between the two points of a comparison. */
+interface QuestionChange {
+  key: Record<string, QuestionTerm>;
+  before: Record<string, QuestionTerm>[];
+  after: Record<string, QuestionTerm>[];
+}
+
+/** The size of each list of a comparison. */
+interface QuestionTotals {
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged?: number;
 }
 
 /** Where a history question read the graph, and what a comparison found. */
@@ -53,8 +63,11 @@ interface QuestionHistory {
   label?: string | null;
   before?: unknown;
   after?: unknown;
+  key?: string[];
   added?: Record<string, QuestionTerm>[] | null;
   removed?: Record<string, QuestionTerm>[] | null;
+  changed?: QuestionChange[] | null;
+  totals?: QuestionTotals | null;
   truncated?: boolean;
 }
 
@@ -199,30 +212,62 @@ async function streamedRewrite(
   throw new Error("the rewrite stream ended before its done event");
 }
 
-/** A row of a comparison as `{ variable: lexical value }`. */
-function lexicalRow(row: Record<string, QuestionTerm>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(row).map(([name, term]) => [name, term.value]),
+/** The totals of a comparison: the server's, else the lengths of its lists. */
+function historyTotals(history: QuestionHistory): QuestionTotals {
+  return (
+    history.totals ?? {
+      added: history.added?.length ?? 0,
+      removed: history.removed?.length ?? 0,
+      changed: history.changed?.length ?? 0,
+    }
   );
 }
 
 /**
  * The history the tool returns: where the question read the graph, and for
- * a comparison the rows that differ as lexical values. The two runs stay
- * out: the later one is the result, and the rows that differ say what the
- * earlier one held.
+ * a comparison the rows that differ as lexical values, with the total of
+ * each list. Each list shows at most `limit` entries; `shown` says how many
+ * when a list is cut. The two runs stay out: the later one is the result,
+ * and the rows that differ say what the earlier one held.
  */
-function historyView(history: QuestionHistory): Record<string, unknown> {
+function historyView(
+  history: QuestionHistory,
+  limit: number,
+): Record<string, unknown> {
   const view: Record<string, unknown> = { ...history };
   delete view.before;
   delete view.after;
-  if (history.added) view.added = history.added.map(lexicalRow);
-  if (history.removed) view.removed = history.removed.map(lexicalRow);
+  if (!history.added && !history.removed && !history.changed) return view;
+  const totals = historyTotals(history);
+  view.totals = totals;
+  const shown: Record<string, number> = {};
+  const show = <T, U>(
+    name: keyof QuestionTotals,
+    list: T[] | null | undefined,
+    map: (item: T) => U,
+  ) => {
+    if (!list) return;
+    const kept = list.slice(0, limit);
+    view[name] = kept.map(map);
+    if (kept.length < (totals[name] ?? list.length)) shown[name] = kept.length;
+  };
+  show("added", history.added, lexicalRow);
+  show("removed", history.removed, lexicalRow);
+  show("changed", history.changed, (change) => ({
+    key: lexicalRow(change.key),
+    before: change.before.map(lexicalRow),
+    after: change.after.map(lexicalRow),
+  }));
+  if (Object.keys(shown).length) view.shown = shown;
   return view;
 }
 
 /** What the agent should know about the history of the answer. */
-function historyNotes(history: QuestionHistory | null | undefined): string[] {
+function historyNotes(
+  history: QuestionHistory | null | undefined,
+  limit: number,
+  query: { sparql: string } | null | undefined,
+): string[] {
   if (!history) return [];
   const notes: string[] = [];
   const point =
@@ -244,10 +289,27 @@ function historyNotes(history: QuestionHistory | null | undefined): string[] {
       `The server could not place ${history.as_of_date} (see error). Pass timeline=[{date, as_of_commit_seq}] to name the commit of each date, or run the query with lbb_query mode=sparql as_of_commit_seq=<commit>.`,
     );
   }
-  if (history.compare && history.added && point) {
+  if (history.compare && (history.added || history.changed) && point) {
+    const totals = historyTotals(history);
+    const keyed = history.key?.length
+      ? `paired by ${history.key.map((v) => `?${v}`).join(", ")}: history.added and history.removed hold the entities at one point only, history.changed the entities whose values differ`
+      : "history.added and history.removed hold the rows that differ (a changed value is a removed row and an added row)";
     notes.push(
-      `A comparison: the rows are the later run; history.added and history.removed hold the rows that changed since ${point}.${history.truncated ? " The difference is not complete: a run returned only its first rows, or more than 500 rows changed." : ""}`,
+      `A comparison since ${point}: the rows are the later run; ${keyed}. Totals: added ${totals.added}, removed ${totals.removed}, changed ${totals.changed}.`,
     );
+    const cut = (["added", "removed", "changed"] as const).filter(
+      (name) => totals[name] > limit,
+    );
+    if (cut.length && query) {
+      notes.push(
+        `Each list shows at most ${limit} entries (${cut.map((name) => `${name}: ${totals[name]}`).join(", ")}; see history.shown). Read them all, page by page, with lbb_query mode=compare query=<the query> before={"as_of_commit_seq": ${history.as_of_commit_seq}}${history.key?.length ? ` key=${JSON.stringify(history.key)}` : ""}.`,
+      );
+    }
+    if (history.truncated) {
+      notes.push(
+        "The difference is not complete: a run did not read all its rows, or a list held more than 500 entries on the server. Use lbb_query mode=compare for the whole difference.",
+      );
+    }
   }
   return notes;
 }
@@ -301,7 +363,9 @@ export async function answerQuestion(
     ...(typeof query?.as_of_commit_seq === "number"
       ? { as_of_commit_seq: query.as_of_commit_seq }
       : {}),
-    ...(response.history ? { history: historyView(response.history) } : {}),
+    ...(response.history
+      ? { history: historyView(response.history, listLimit(detail)) }
+      : {}),
     error: response.error ?? null,
     trace_id: traceId,
     attempts: response.attempts,
@@ -319,7 +383,7 @@ export async function answerQuestion(
       `eval trace ${traceId}: to label rows, read their item ids with lbb_evals action=trace trace_id=${traceId}, then call lbb_evals action=label trace_id=${traceId} item=<id> valid=true|false (or items=[…]).`,
     );
   }
-  notes.push(...historyNotes(response.history));
+  notes.push(...historyNotes(response.history, listLimit(detail), query));
   if (response.error && query) {
     notes.push(
       "The last query failed (see error). Correct it and run it with lbb_query mode=sparql, or ask again with more context.",

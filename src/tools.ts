@@ -7,6 +7,16 @@ import {
   type QuestionArgs,
   type QuestionProgress,
 } from "./question.js";
+import {
+  commitAt,
+  compareQuery,
+  describeGraph,
+  findNames,
+  type CommitAtArgs,
+  type CompareArgs,
+  type DescribeArgs,
+  type NamesArgs,
+} from "./query-tools.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
@@ -125,7 +135,7 @@ export function registerLbbTools(
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze. Use mode=question when you have a question in plain words and no SPARQL query: the server selects the kind of query (route), writes the SPARQL query from a description of the graph, checks it, runs it, and returns the route, the rationale, the query and its rows. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze, and four tools for writing your own queries: names, describe, commit_at, compare. names: before a query that names an entity (a person, a company), find its IRI with text=<the question or the names>; use the first candidate, not a CONTAINS match on the name. describe: before a query on classes or properties you have not seen, read them with question=<the question> (or classes/properties as IRIs): how many sampled instances hold each property (a filter on a rare one returns few rows), the values of small classes such as stages, examples and schema statements. commit_at: for a question about a date, find the commit of date=YYYY-MM-DD (or moment=RFC 3339), then run mode=sparql as_of_commit_seq=<it>. compare: for what changed between two points, run one SELECT at before and after (default the latest) with key=[the entity variable]; added, removed and changed come with totals and pages (next). Use mode=question when you have a question in plain words and no SPARQL query: the server selects the kind of query (route), writes the SPARQL query from a description of the graph, checks it, runs it, and returns the route, the rationale, the query and its rows. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -464,6 +474,42 @@ export function registerLbbTools(
               options.queryTextFormat,
               progress,
             );
+          } catch (error) {
+            return errorResult(await enrichError(client, error));
+          }
+        })();
+      }
+      if (
+        args.mode === "names" ||
+        args.mode === "describe" ||
+        args.mode === "commit_at" ||
+        args.mode === "compare"
+      ) {
+        const toolArgs = args as Record<string, unknown>;
+        return (async () => {
+          try {
+            switch (args.mode) {
+              case "names":
+                return await findNames(
+                  client,
+                  toolArgs as unknown as NamesArgs,
+                );
+              case "describe":
+                return await describeGraph(
+                  client,
+                  toolArgs as unknown as DescribeArgs,
+                );
+              case "commit_at":
+                return await commitAt(
+                  client,
+                  toolArgs as unknown as CommitAtArgs,
+                );
+              default:
+                return await compareQuery(
+                  client,
+                  toolArgs as unknown as CompareArgs,
+                );
+            }
           } catch (error) {
             return errorResult(await enrichError(client, error));
           }

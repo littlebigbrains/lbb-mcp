@@ -328,12 +328,17 @@ test("lbb_query mode=question sends a timeline and returns the rows a comparison
       truncated: true,
       added: [{ name: "https://x.test/e/c" }],
       removed: [{ name: "https://x.test/e/a" }],
+      totals: { added: 1, removed: 1, changed: 0 },
     });
     assert.match(
       body.notes?.[0] ?? "",
       /commit 1 \(Tender\), found by the timeline/,
     );
-    assert.match(body.notes?.[1] ?? "", /history\.added.*not complete/);
+    assert.match(
+      body.notes?.[1] ?? "",
+      /history\.added and history\.removed hold the rows that differ.*Totals: added 1, removed 1, changed 0/,
+    );
+    assert.match(body.notes?.[2] ?? "", /not complete/);
 
     const refused = await client.callTool({
       name: "lbb_query",
