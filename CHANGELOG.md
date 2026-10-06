@@ -4,6 +4,29 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## Unreleased
 
+- Require `@littlebigbrain/client` ^0.21.0.
+Breaking: `lbb_query` with `mode: "question"` always answers in plain words.
+The server moved questions to `POST /v1/query/ask` and removed the one-shot
+rewrite.
+
+- Remove the `answer` and `run` arguments of `mode: "question"`. The tool
+  refuses them. A question now always runs the server's answer loop and
+  returns `answer` (`text` and `citations`, or `null` when the loop stopped
+  first) and `steps`, with the route and the query and rows the answer stands
+  on. The tool no longer returns a query without running it. To write the
+  queries yourself, use `names`, `describe`, `commit_at` and `compare`, then
+  `mode: "sparql"`.
+- The tool calls `POST /v1/query/ask` and never sends `run` or `previous`.
+  `limit` is the rows each query of the loop returns.
+- Progress names the route, each step of the loop (its tool, its input, and
+  its rows or differences), and the answer. The progress of a written query,
+  its run, its rows and its correction is gone. Progress needs the next
+  `@littlebigbrain/client` release, which adds `query.askStream`. With an
+  older client the tool answers without progress.
+- A comparison holds no rows: `history.added`, `history.removed` and
+  `history.changed` hold what differs, and `as_of_commit_seq` is the later
+  point. The summary says "compared two points".
+- The pinned tool-contract digest moves with the removed arguments.
 - `lbb_query` gains four modes for writing your own queries, none of which
   calls a model. `names` (`text`, `limit`) finds the IRIs of the names in a
   text, the person before a document that has the person's name. `describe`
@@ -22,6 +45,11 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## 0.10.0 (2026-10-05)
 
+- `lbb_query` with `mode: "question"` takes `answer: true`. The server then
+  answers in plain words after its model ran queries and read their rows (at
+  most 4 rounds). The result adds `answer` (`text` and `citations`, or `null`
+  when the loop stopped first) and `steps`; the rows are those of the query
+  the answer stands on. Progress names each step and the answer.
 - Require `@littlebigbrain/client` ^0.20.0.
 - `lbb_query` with `mode: "sparql"` describes the SPARQL rerank:
   `search:rerank true ; search:relevance ?r` lets the rerank model (Jev) keep
