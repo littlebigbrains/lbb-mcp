@@ -114,23 +114,29 @@ An agent without a SPARQL query can pass the question in plain words:
 }
 ```
 
-The server selects the kind of query, writes the SPARQL query from a
-description of the graph, checks it, and runs it. The result holds the route,
-the rationale, the query, and its rows. `next` continues the same query with
-`mode: "sparql"`. Each question uses model tokens and counts toward a daily
-limit of the stack, so the tool does not retry a failed call. The server finds
-the names in the question in the graph and lists them in `linked`. When the
-question is about records you already know, pass their IRIs in `anchor` (at
-most 10): the query uses them directly. A question about a date reads the last
-commit written by the end of that day; pass `timeline` (`[{date,
-as_of_commit_seq, label?}]`) when the commits stand for other dates. A
-question that asks what changed returns `history.added` and
-`history.removed`, the rows that differ.
+The server answers in plain words (`POST /v1/query/ask`). A router model picks
+the kind of question. A reasoning model runs queries in a bounded loop, reads
+their rows, and answers. The result holds `answer` (`text` and `citations`,
+the IRIs the answer names), `steps`, the route, and the query and rows the
+answer stands on. `next` continues that query with `mode: "sparql"`. A
+question takes about 8 s. Each question uses model tokens and counts toward a
+daily limit of the stack, so the tool does not retry a failed call.
 
-A question can take some seconds. When the tool call carries a
-`_meta.progressToken`, the server sends a progress notification for each
-step, for example `Route: lookup (router, 0.92)` or `12 rows in 85 ms`. The
-result is the same. Cancel the call to stop the server's work.
+The server finds the names in the question in the graph and lists them in
+`linked`. When the question is about records you already know, pass their
+IRIs in `anchor` (at most 10): the queries use them directly. A question
+about a date reads the last commit written by the end of that day; pass
+`timeline` (`[{date, as_of_commit_seq, label?}]`) when the commits stand for
+other dates. A question that asks what changed returns `history.added`,
+`history.removed` and `history.changed`, with `history.totals`.
+
+When the tool call carries a `_meta.progressToken`, the server sends a
+progress notification for each step, for example `Route: lookup (router,
+0.92)` or `Step 2, sparql SELECT ?db: 1 row`. The result is the same. Cancel
+the call to stop the server's work.
+
+To write the queries yourself, use `names`, `describe`, `commit_at` and
+`compare`, then `mode: "sparql"`.
 
 For your own data, start with `lbb_inspect` using `action: "guide"` or
 `action: "ontology"`. Imported Resource Description Framework (RDF) data keeps
