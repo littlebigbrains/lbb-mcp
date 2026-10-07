@@ -8,7 +8,14 @@ import { connect, ok, payload, type Call } from "./test-support.js";
 const SPARQL =
   "SELECT ?name WHERE { ?s a <https://littlebigbrain.com/class/service> ; <http://www.w3.org/2000/01/rdf-schema#label> ?name }";
 
-function rewrite(overrides: Record<string, unknown> = {}) {
+const ANSWER = {
+  text: "Two services: Auth Service and Billing.",
+  citations: ["https://x.test/e/auth"],
+};
+
+const CHART = { kind: "table", x: "name" };
+
+function asked(overrides: Record<string, unknown> = {}) {
   return {
     route: {
       kind: "lookup",
@@ -34,6 +41,8 @@ function rewrite(overrides: Record<string, unknown> = {}) {
       run_ms: 4,
       total_ms: 10,
     },
+    answer: ANSWER,
+    steps: [],
     ...overrides,
   };
 }
@@ -79,9 +88,12 @@ function recorder(responses: unknown[]): { fetch: FetchLike; calls: Call[] } {
   return { fetch, calls };
 }
 
-test("lbb_query mode=question posts the question and returns the route, the query and the rows", async () => {
+test("lbb_query mode=question posts the question and returns the answer, the route, the query and the rows", async () => {
   const { fetch, calls } = recorder([
-    rewrite({ result: run(["Auth Service", "Billing"]) }),
+    asked({
+      result: run(["Auth Service", "Billing"]),
+      answer: { ...ANSWER, chart: CHART },
+    }),
   ]);
   const client = await connect(fetch);
   try {
@@ -96,13 +108,12 @@ test("lbb_query mode=question posts the question and returns the route, the quer
     });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.equal(calls.length, 1, "a question reads no metadata first");
-    assert.equal(calls[0].input, "http://h/v1/query/rewrite?graph=g");
+    assert.equal(calls[0].input, "http://h/v1/query/ask?graph=g");
     assert.equal(calls[0].init.method, "POST");
     assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
       question: "Which services exist?",
       context: "Services of the platform team.",
       route: "lookup",
-      run: true,
       limit: 20,
     });
 
@@ -114,6 +125,8 @@ test("lbb_query mode=question posts the question and returns the route, the quer
       /^lbb_query\.question: route lookup \(router, confidence 0\.92\): returned 2 rows$/,
     );
     const data = body.data as {
+      answer: unknown;
+      steps: unknown[];
       route: Record<string, unknown>;
       rationale: string;
       sparql: string;
@@ -123,6 +136,8 @@ test("lbb_query mode=question posts the question and returns the route, the quer
       attempts: number;
       results: { bindings: { name: { value: string } }[] };
     };
+    assert.deepEqual(data.answer, { ...ANSWER, chart: CHART });
+    assert.deepEqual(data.steps, []);
     assert.deepEqual(data.route, {
       kind: "lookup",
       confidence: 0.92,
@@ -146,13 +161,96 @@ test("lbb_query mode=question posts the question and returns the route, the quer
   }
 });
 
+test("lbb_query mode=question returns the steps, and says when the loop stopped", async () => {
+  const { fetch, calls } = recorder([
+    asked({
+      result: run(["Auth Service", "Billing"]),
+      steps: [
+        {
+          n: 1,
+          tool: "sparql",
+          input: { query: "SELEC" },
+          ok: false,
+          error: "parse error",
+          ms: 2,
+        },
+        {
+          n: 2,
+          tool: "sparql",
+          input: { query: SPARQL },
+          ok: true,
+          rows: 2,
+          ms: 9,
+        },
+        {
+          n: 3,
+          tool: "compare",
+          input: { query: SPARQL, before: { date: "2026-06-01" } },
+          ok: true,
+          rows: 1,
+          ms: 30,
+        },
+      ],
+    }),
+    asked({
+      query: null,
+      result: null,
+      answer: null,
+      error: "The answer loop stopped at its time limit.",
+    }),
+  ]);
+  const client = await connect(fetch);
+  try {
+    const result = await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "question", question: "Which services exist?" },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+      question: "Which services exist?",
+      limit: 20,
+    });
+    const body = payload(result);
+    const data = body.data as {
+      answer: { text: string; citations: string[] } | null;
+      steps: Record<string, unknown>[];
+      results: { bindings: unknown[] };
+    };
+    assert.deepEqual(data.answer, ANSWER);
+    assert.deepEqual(data.steps, [
+      { n: 1, tool: "sparql", ok: false, error: "parse error" },
+      { n: 2, tool: "sparql", ok: true, rows: 2 },
+      { n: 3, tool: "compare", ok: true, rows: 1 },
+    ]);
+    assert.equal(data.results.bindings.length, 2);
+
+    const stopped = await client.callTool({
+      name: "lbb_query",
+      arguments: { mode: "question", question: "Which services exist?" },
+    });
+    const stoppedBody = payload(stopped) as ReturnType<typeof payload> & {
+      notes?: string[];
+    };
+    assert.equal((stoppedBody.data as { answer: unknown }).answer, null);
+    assert.match(stoppedBody.summary, /: no query$/);
+    assert.ok(
+      stoppedBody.notes?.some((note) =>
+        note.includes("stopped before it answered"),
+      ),
+      JSON.stringify(stoppedBody),
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("lbb_query mode=question bounds the rows and continues the query with mode=sparql", async () => {
   const names = Array.from(
     { length: 100 },
     (_, index) => `${index}:` + "x".repeat(2_000),
   );
   const { fetch, calls } = recorder([
-    rewrite({
+    asked({
       result: run(names, {
         limit: 100,
         total: 250,
@@ -190,7 +288,7 @@ test("lbb_query mode=question bounds the rows and continues the query with mode=
       Buffer.byteLength((result.content as { text: string }[])[0].text) <=
         80_000,
     );
-    assert.equal(calls[0].input, "http://h/v1/query/rewrite?graph=other");
+    assert.equal(calls[0].input, "http://h/v1/query/ask?graph=other");
     assert.equal(JSON.parse(calls[0].init.body ?? "{}").limit, 100);
     const body = payload(result);
     const shown = (body.data as { results: { bindings: unknown[] } }).results
@@ -244,7 +342,7 @@ test("lbb_query mode=question sends the anchors and returns the linked names", a
     note: "not in the graph at the latest commit",
   };
   const { fetch, calls } = recorder([
-    rewrite({ linked: [link], anchors: [anchor] }),
+    asked({ linked: [link], anchors: [anchor] }),
   ]);
   const client = await connect(fetch);
   try {
@@ -254,13 +352,12 @@ test("lbb_query mode=question sends the anchors and returns the linked names", a
         mode: "question",
         question: "Show me everything about Quelmann.",
         anchor: ["https://x.test/e/nope"],
-        run: false,
       },
     });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
       question: "Show me everything about Quelmann.",
-      run: false,
+      limit: 20,
       anchor: ["https://x.test/e/nope"],
     });
     const body = payload(result) as ReturnType<typeof payload> & {
@@ -280,16 +377,15 @@ test("lbb_query mode=question sends the anchors and returns the linked names", a
 test("lbb_query mode=question sends a timeline and returns the rows a comparison changed", async () => {
   const uri = (value: string) => ({ type: "uri", value });
   const { fetch, calls } = recorder([
-    rewrite({
+    asked({
       route: { kind: "history", confidence: 1, by: "caller" },
+      query: { sparql: SPARQL, entailment: "none", as_of_commit_seq: 3 },
       history: {
         as_of_date: "2026-06-05",
         compare: true,
         as_of_commit_seq: 1,
         resolved_by: "timeline",
         label: "Tender",
-        before: { results: "{}" },
-        after: { results: "{}" },
         added: [{ name: uri("https://x.test/e/c") }],
         removed: [{ name: uri("https://x.test/e/a") }],
         truncated: true,
@@ -307,18 +403,22 @@ test("lbb_query mode=question sends a timeline and returns the rows a comparison
         mode: "question",
         question: "What changed since 5 June?",
         timeline,
-        run: false,
       },
     });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
       question: "What changed since 5 June?",
-      run: false,
+      limit: 20,
       timeline,
     });
     const body = payload(result) as ReturnType<typeof payload> & {
       notes?: string[];
     };
+    assert.match(body.summary, /: compared two points$/);
+    assert.equal(
+      (body.data as { as_of_commit_seq: number }).as_of_commit_seq,
+      3,
+    );
     assert.deepEqual((body.data as { history: unknown }).history, {
       as_of_date: "2026-06-05",
       compare: true,
@@ -336,7 +436,7 @@ test("lbb_query mode=question sends a timeline and returns the rows a comparison
     );
     assert.match(
       body.notes?.[1] ?? "",
-      /history\.added and history\.removed hold the rows that differ.*Totals: added 1, removed 1, changed 0/,
+      /from commit 1 \(Tender\) to commit 3; history\.added and history\.removed hold the rows that differ.*Totals: added 1, removed 1, changed 0/,
     );
     assert.match(body.notes?.[2] ?? "", /not complete/);
 
@@ -354,35 +454,35 @@ test("lbb_query mode=question sends a timeline and returns the rows a comparison
   }
 });
 
-test("lbb_query mode=question run=false returns the whole query without rows", async () => {
+test("lbb_query mode=question returns a comparison's whole query without rows", async () => {
   const longSparql = `${SPARQL} # ${"comment ".repeat(80)}`;
-  const { fetch, calls } = recorder([
-    rewrite({ query: { sparql: longSparql, entailment: "none" } }),
+  const { fetch } = recorder([
+    asked({
+      query: { sparql: longSparql, entailment: "none", as_of_commit_seq: 4 },
+      history: { compare: true, as_of_commit_seq: 2, added: [], removed: [] },
+    }),
   ]);
   const client = await connect(fetch);
   try {
     const result = await client.callTool({
       name: "lbb_query",
-      arguments: { mode: "question", question: "Which services?", run: false },
+      arguments: { mode: "question", question: "What changed?" },
     });
     assert.notEqual(result.isError, true, JSON.stringify(result));
-    assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
-      question: "Which services?",
-      run: false,
-    });
     const body = payload(result);
-    assert.match(body.summary, /: the query, not run$/);
+    assert.match(body.summary, /: compared two points$/);
     const data = body.data as { sparql: string; trace_id: string | null };
     assert.equal(data.sparql, longSparql, "compact detail keeps the query");
     assert.equal(data.trace_id, null);
+    assert.equal(body.row_page, undefined);
   } finally {
     await client.close();
   }
 });
 
-test("lbb_query mode=question reports an ASK answer, a failed query and an unanswerable question", async () => {
+test("lbb_query mode=question reports an ASK answer, a stopped loop and an unanswerable question", async () => {
   const { fetch } = recorder([
-    rewrite({
+    asked({
       query: { sparql: "ASK { ?s ?p ?o }", entailment: "none" },
       result: {
         results: JSON.stringify({ head: {}, boolean: true }),
@@ -395,12 +495,16 @@ test("lbb_query mode=question reports an ASK answer, a failed query and an unans
         },
       },
     }),
-    rewrite({ attempts: 2, error: "unknown prefix ex" }),
-    rewrite({
+    asked({
+      attempts: 2,
+      answer: null,
+      error: "The answer loop stopped at its time limit.",
+    }),
+    asked({
       route: { kind: "history", confidence: 0.81, by: "router" },
       history: { as_of_date: "2026-09-01", compare: false },
     }),
-    rewrite({
+    asked({
       route: { kind: "unanswerable", confidence: 0.9, by: "rewriter" },
       query: null,
       rationale: "The graph holds no salaries.",
@@ -417,15 +521,21 @@ test("lbb_query mode=question reports an ASK answer, a failed query and an unans
     assert.match(ask.summary, /: ran the query$/);
     assert.equal((ask.data as { boolean: boolean }).boolean, true);
 
-    const failed = payload(
+    const stopped = payload(
       await client.callTool({
         name: "lbb_query",
         arguments: { mode: "question", question: "Which services exist?" },
       }),
     ) as ReturnType<typeof payload> & { notes?: string[] };
-    assert.match(failed.summary, /: the query failed$/);
-    assert.equal((failed.data as { error: string }).error, "unknown prefix ex");
-    assert.match(failed.notes?.[0] ?? "", /mode=sparql/);
+    assert.match(stopped.summary, /: no rows$/);
+    assert.equal(
+      (stopped.data as { error: string }).error,
+      "The answer loop stopped at its time limit.",
+    );
+    assert.match(
+      stopped.notes?.[0] ?? "",
+      /stopped before it answered.*mode=sparql/,
+    );
 
     const history = payload(
       await client.callTool({
@@ -486,6 +596,8 @@ test("lbb_query mode=question does not retry a failed call and checks its argume
       { mode: "question", question: "q", limit: 1_001 },
       { mode: "question", question: "q", route: "guess" },
       { mode: "question", question: "q", query: "ASK {}" },
+      { mode: "question", question: "q", answer: true },
+      { mode: "question", question: "q", run: false },
       {
         mode: "question",
         question: "q",
@@ -504,9 +616,7 @@ test("lbb_query mode=question does not retry a failed call and checks its argume
   }
 });
 
-const LONG_ERROR = `unknown prefix ex: ${"x".repeat(300)}`;
-
-/** A streamed rewrite as the server sends it, in chunks of 5 bytes. */
+/** A streamed answer as the server sends it, in chunks of 5 bytes. */
 function streamed(events: [string, unknown][]): Awaited<ReturnType<FetchLike>> {
   const text = events
     .map(
@@ -536,20 +646,26 @@ function streamed(events: [string, unknown][]): Awaited<ReturnType<FetchLike>> {
 function progressEvents(done: unknown): [string, unknown][] {
   return [
     ["grounding", { cached: true, age_ms: 5, classes: 3 }],
-    ["route", { kind: "lookup", confidence: 0.92, by: "router" }],
-    ["query", { sparql: "SELECT ?x", entailment: "none", attempt: 1 }],
-    ["run", { as_of_commit_seq: null }],
-    ["repair", { error: LONG_ERROR, attempt: 2 }],
+    ["route", { kind: "search", confidence: 0.55, by: "router" }],
+    ["step", { n: 1, tool: "find_entities", input: "Auth", ok: true }],
     ["answer.delta", { text: "a later event" }],
-    ["query", { sparql: SPARQL, entailment: "subclass", attempt: 2 }],
-    ["run", { as_of_commit_seq: 9 }],
-    ["rows", { count: 2, ms: 85 }],
+    ["step", { n: 2, tool: "sparql", input: "SELEC", ok: false }],
+    [
+      "step",
+      { n: 3, tool: "sparql", input: "SELECT ?name", ok: true, rows: 2 },
+    ],
+    [
+      "step",
+      { n: 4, tool: "compare", input: "SELECT ?name", ok: true, rows: 1 },
+    ],
+    ["route", { kind: "lookup", confidence: 0.92, by: "rewriter" }],
+    ["answer", ANSWER],
     ["done", done],
   ];
 }
 
 test("lbb_query mode=question with a progress token reports each step and returns the same result", async () => {
-  const response = rewrite({ result: run(["Auth Service", "Billing"]) });
+  const response = asked({ result: run(["Auth Service", "Billing"]) });
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
     calls.push({ input, init: init ?? {} });
@@ -576,26 +692,22 @@ test("lbb_query mode=question with a progress token reports each step and return
     );
     assert.notEqual(withProgress.isError, true, JSON.stringify(withProgress));
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].input, "http://h/v1/query/rewrite?graph=g");
+    assert.equal(calls[0].input, "http://h/v1/query/ask?graph=g");
     assert.equal(calls[0].init.headers?.accept, "text/event-stream");
     assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
       question: "Which services exist?",
       route: "lookup",
-      run: true,
       limit: 20,
     });
     assert.deepEqual(progress, [
       { progress: 1, message: "Read the graph description" },
-      { progress: 2, message: "Route: lookup (router, 0.92)" },
-      { progress: 3, message: "Wrote query 1" },
-      { progress: 4, message: "Running the query" },
-      {
-        progress: 5,
-        message: `Correcting the query: ${LONG_ERROR.slice(0, 199)}…`,
-      },
-      { progress: 6, message: "Wrote query 2" },
-      { progress: 7, message: "Running the query" },
-      { progress: 8, message: "2 rows in 85 ms" },
+      { progress: 2, message: "Route: search (router, 0.55)" },
+      { progress: 3, message: "Step 1, find_entities Auth" },
+      { progress: 4, message: "Step 2, sparql SELEC: failed" },
+      { progress: 5, message: "Step 3, sparql SELECT ?name: 2 rows" },
+      { progress: 6, message: "Step 4, compare SELECT ?name: 1 difference" },
+      { progress: 7, message: "Route: lookup (rewriter, 0.92)" },
+      { progress: 8, message: "Answered" },
     ]);
 
     const without = await client.callTool({
@@ -615,7 +727,7 @@ test("lbb_query mode=question with a progress token reports each step and return
 });
 
 test("lbb_query mode=question sends no progress without a token", async () => {
-  const { fetch, calls } = recorder([rewrite({ result: run(["Billing"]) })]);
+  const { fetch, calls } = recorder([asked({ result: run(["Billing"]) })]);
   const client = await connect(fetch);
   const notifications: unknown[] = [];
   client.setNotificationHandler(ProgressNotificationSchema, (notification) => {

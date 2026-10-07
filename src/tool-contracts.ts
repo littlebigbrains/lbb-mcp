@@ -25,7 +25,7 @@ export type QueryCursor = {
 export const DEFAULT_DETAIL: Detail = "compact";
 export const HARD_OUTPUT_CHARS = 80_000;
 export const MAX_QUERY_ROW_LIMIT = 5_000;
-/** The most rows `POST /v1/query/rewrite` returns from a run. */
+/** The most rows each query of `POST /v1/query/ask` returns. */
 export const QUESTION_MAX_ROWS = 1_000;
 /** Entity IRIs one question may anchor, and the characters of one. */
 export const QUESTION_MAX_ANCHORS = 10;
@@ -589,7 +589,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .string()
         .min(1)
         .describe(
-          "question: the question in plain words (required), 1 to 4,000 characters. The server writes the SPARQL query from a description of this graph, checks it, and runs it. describe: the question whose classes and properties to describe.",
+          "question: the question in plain words (required), 1 to 4,000 characters. The server's model runs queries on this graph, reads their rows, and answers. describe: the question whose classes and properties to describe.",
         ),
       context: z
         .string()
@@ -608,7 +608,7 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         ])
         .optional()
         .describe(
-          "question: the kind of query, when you know it. Omit it and the router model selects it.",
+          "question: the kind of question, when you know it. Omit it and the router model picks it.",
         ),
       limit: z
         .number()
@@ -617,20 +617,14 @@ export const queryInputSchema: z.ZodDiscriminatedUnion<
         .max(QUESTION_MAX_ROWS)
         .optional()
         .describe(
-          "question: rows the run returns, 1 to 1,000. Defaults by detail: compact=20, standard=100, full=1000. names: candidates per name, 1 to 10 (default 5). compare: entries of each list per page, 1 to 1,000 (defaults by detail: 20, 100, 500).",
-        ),
-      run: z
-        .boolean()
-        .optional()
-        .describe(
-          "question: run the query and return its rows. Defaults to true; false returns the query only.",
+          "question: rows each query of the server's loop returns, 1 to 1,000. Defaults by detail: compact=20, standard=100, full=1000. names: candidates per name, 1 to 10 (default 5). compare: entries of each list per page, 1 to 1,000 (defaults by detail: 20, 100, 500).",
         ),
       anchor: z
         .array(z.string().min(1).max(QUESTION_MAX_ANCHOR_CHARS))
         .max(QUESTION_MAX_ANCHORS)
         .optional()
         .describe(
-          "question: entity IRIs the question is about, at most 10 (for example the record the user has open). The server reads each one, and the query uses these IRIs directly instead of matching their names.",
+          "question: entity IRIs the question is about, at most 10 (for example the record the user has open). The server reads each one, and its queries use these IRIs directly instead of matching their names.",
         ),
       timeline: z
         .array(
