@@ -318,7 +318,6 @@ test("lbb_query mode=question keeps a comparison's totals and says when a list i
         arguments: {
           mode: "question",
           question: "Who moved stage since 5 June?",
-          run: false,
         },
       }),
     ) as Notes;

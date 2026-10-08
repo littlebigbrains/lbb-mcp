@@ -24,6 +24,9 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_embeddings_delete",
     "lbb_embeddings_manage",
     "lbb_evals",
+    "lbb_fit_sources",
+    "lbb_fit_sources_delete",
+    "lbb_fit_sources_manage",
     "lbb_inspect",
     "lbb_models",
     "lbb_query",
@@ -41,6 +44,12 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     false,
   );
   assert.equal(byName.lbb_embeddings_delete.annotations?.destructiveHint, true);
+  assert.equal(byName.lbb_fit_sources.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_fit_sources_manage.annotations?.readOnlyHint, false);
+  assert.equal(
+    byName.lbb_fit_sources_delete.annotations?.destructiveHint,
+    true,
+  );
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
   assert.equal(byName.lbb_configure.annotations?.readOnlyHint, false);
@@ -122,7 +131,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "22f1a5a7ee86cd4f7ffc2e8944dd106e3e2bacb3deeddfbacb8107361ae629a5",
+    "8a1977f1a50818d2a3c79d92ee581dff8b4144f46cdd525fd38e3ffed3967167",
   );
   await client.close();
 });
