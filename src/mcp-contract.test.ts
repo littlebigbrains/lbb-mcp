@@ -24,7 +24,12 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_embeddings_delete",
     "lbb_embeddings_manage",
     "lbb_evals",
+    "lbb_fit_sources",
+    "lbb_fit_sources_delete",
+    "lbb_fit_sources_manage",
     "lbb_inspect",
+    "lbb_model_choice",
+    "lbb_model_choice_manage",
     "lbb_models",
     "lbb_query",
     "lbb_rdf",
@@ -41,6 +46,22 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     false,
   );
   assert.equal(byName.lbb_embeddings_delete.annotations?.destructiveHint, true);
+  assert.equal(byName.lbb_fit_sources.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_fit_sources_manage.annotations?.readOnlyHint, false);
+  assert.equal(
+    byName.lbb_fit_sources_delete.annotations?.destructiveHint,
+    true,
+  );
+  assert.equal(byName.lbb_model_choice.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_model_choice_manage.annotations?.readOnlyHint, false);
+  assert.equal(
+    byName.lbb_model_choice_manage.annotations?.destructiveHint,
+    false,
+  );
+  assert.match(
+    byName.lbb_model_choice_manage.description ?? "",
+    /switch only what the user confirmed/,
+  );
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
   assert.equal(byName.lbb_configure.annotations?.readOnlyHint, false);
@@ -122,7 +143,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "22f1a5a7ee86cd4f7ffc2e8944dd106e3e2bacb3deeddfbacb8107361ae629a5",
+    "1f8d6c3b22b2ccdd8d3daf652024d96aa2730f6616c88ac5e7f8de18ed2a030c",
   );
   await client.close();
 });
