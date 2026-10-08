@@ -11,7 +11,7 @@ import {
   scoped,
 } from "./tool-runtime.js";
 
-// The request and response of `POST /v1/query/rewrite`, as this tool sends and
+// The request and response of `POST /v1/query/ask`, as this tool sends and
 // reads them. They are local types, so the package builds against a client
 // release whose generated schema does not name the route yet.
 
@@ -24,10 +24,20 @@ interface QuestionRequest {
   question: string;
   context?: string;
   route?: QuestionRoute;
-  run: boolean;
   limit?: number;
   anchor?: string[];
   timeline?: TimelinePoint[];
+}
+
+/** One tool call of the server's answer loop. */
+interface AnswerStep {
+  n: number;
+  tool: string;
+  input?: unknown;
+  ok: boolean;
+  rows?: number | null;
+  error?: string | null;
+  ms?: number;
 }
 
 /** A date and the commit that holds the graph as it was then. */
@@ -61,8 +71,6 @@ interface QuestionHistory {
   as_of_commit_seq?: number | null;
   resolved_by?: "commit_time" | "timeline" | "request" | null;
   label?: string | null;
-  before?: unknown;
-  after?: unknown;
   key?: string[];
   added?: Record<string, QuestionTerm>[] | null;
   removed?: Record<string, QuestionTerm>[] | null;
@@ -90,6 +98,18 @@ interface QuestionAnchor {
   note?: string | null;
 }
 
+/**
+ * How to draw the rows of the answer's query, as the server checked it:
+ * the columns exist in the rows, and `y` holds numbers for `bar` and `line`
+ * (`x` and `y` for `scatter`).
+ */
+interface QuestionChart {
+  kind: "bar" | "line" | "scatter" | "table";
+  x?: string | null;
+  y?: string | null;
+  series?: string | null;
+}
+
 interface QuestionResponse {
   route: {
     kind: QuestionRoute;
@@ -113,6 +133,12 @@ interface QuestionResponse {
   attempts: number;
   linked?: QuestionLink[];
   anchors?: QuestionAnchor[];
+  answer?: {
+    text: string;
+    citations?: string[];
+    chart?: QuestionChart | null;
+  } | null;
+  steps?: AnswerStep[];
 }
 
 export interface QuestionArgs {
@@ -120,7 +146,6 @@ export interface QuestionArgs {
   context?: string;
   route?: QuestionRoute;
   limit?: number;
-  run?: boolean;
   anchor?: string[];
   timeline?: TimelinePoint[];
   detail?: string;
@@ -137,10 +162,8 @@ export interface QuestionProgress {
   report(progress: number, message: string): Promise<void>;
 }
 
-/** One event of a streamed rewrite, as this tool reads it. */
+/** One event of a streamed question, as this tool reads it. */
 type StreamEvent = { event: string; data: unknown };
-
-const REPAIR_ERROR_CHARS = 200;
 
 /** The progress message of a stream event, in short plain words. */
 export function progressMessage(event: StreamEvent): string | undefined {
@@ -155,51 +178,45 @@ export function progressMessage(event: StreamEvent): string | undefined {
           : "";
       return `Route: ${String(data.kind)} (${String(data.by)}${confidence})`;
     }
-    case "query":
-      return `Wrote query ${String(data.attempt ?? 1)}`;
-    case "run":
-      return data.point === "before"
-        ? "Running the query at the earlier point"
-        : data.point === "after"
-          ? "Running the query at the later point"
-          : "Running the query";
-    case "rows": {
-      const count = Number(data.count);
-      return `${count} ${count === 1 ? "row" : "rows"} in ${String(data.ms)} ms`;
+    case "step": {
+      // A compare step counts the entries that differ, not rows.
+      const unit = data.tool === "compare" ? "difference" : "row";
+      const rows =
+        typeof data.rows === "number"
+          ? `: ${data.rows} ${unit}${data.rows === 1 ? "" : "s"}`
+          : "";
+      const outcome = data.ok === false ? ": failed" : rows;
+      return `Step ${String(data.n)}, ${String(data.tool)} ${String(data.input ?? "")}${outcome}`;
     }
-    case "repair": {
-      const error = String(data.error ?? "");
-      const shown =
-        error.length > REPAIR_ERROR_CHARS
-          ? `${error.slice(0, REPAIR_ERROR_CHARS - 1)}…`
-          : error;
-      return `Correcting the query: ${shown}`;
-    }
+    case "answer":
+      return "Answered";
     default:
       return undefined;
   }
 }
 
-type RewriteStream = (
-  body: QuestionRequest,
-  opts: { signal?: AbortSignal },
+type AskStream = (
+  question: string,
+  options: Omit<QuestionRequest, "question"> & { signal?: AbortSignal },
 ) => AsyncIterable<StreamEvent>;
 
 /**
- * The rewrite as a stream of progress events. Each event becomes one
+ * The question as a stream of progress events. Each event becomes one
  * progress notification; the `done` event is the same response as the call
- * without a stream. A client release without `query.rewriteStream` answers
+ * without a stream. A client release without `query.askStream` answers
  * without progress.
  */
-async function streamedRewrite(
+async function streamedAnswer(
   target: LbbClient,
   body: QuestionRequest,
   progress: QuestionProgress,
 ): Promise<QuestionResponse | undefined> {
-  const query = target.query as unknown as { rewriteStream?: RewriteStream };
-  if (typeof query.rewriteStream !== "function") return undefined;
+  const query = target.query as unknown as { askStream?: AskStream };
+  if (typeof query.askStream !== "function") return undefined;
+  const { question, ...options } = body;
   let step = 0;
-  for await (const event of query.rewriteStream.call(target.query, body, {
+  for await (const event of query.askStream.call(target.query, question, {
+    ...options,
     signal: progress.signal,
   })) {
     if (event.event === "done") return event.data as QuestionResponse;
@@ -209,7 +226,7 @@ async function streamedRewrite(
     // A lost notification never fails the question.
     await progress.report(step, message).catch(() => undefined);
   }
-  throw new Error("the rewrite stream ended before its done event");
+  throw new Error("the answer stream ended before its done event");
 }
 
 /** The totals of a comparison: the server's, else the lengths of its lists. */
@@ -227,16 +244,13 @@ function historyTotals(history: QuestionHistory): QuestionTotals {
  * The history the tool returns: where the question read the graph, and for
  * a comparison the rows that differ as lexical values, with the total of
  * each list. Each list shows at most `limit` entries; `shown` says how many
- * when a list is cut. The two runs stay out: the later one is the result,
- * and the rows that differ say what the earlier one held.
+ * when a list is cut.
  */
 function historyView(
   history: QuestionHistory,
   limit: number,
 ): Record<string, unknown> {
   const view: Record<string, unknown> = { ...history };
-  delete view.before;
-  delete view.after;
   if (!history.added && !history.removed && !history.changed) return view;
   const totals = historyTotals(history);
   view.totals = totals;
@@ -266,7 +280,8 @@ function historyView(
 function historyNotes(
   history: QuestionHistory | null | undefined,
   limit: number,
-  query: { sparql: string } | null | undefined,
+  query:
+    { sparql: string; as_of_commit_seq?: number | null } | null | undefined,
 ): string[] {
   if (!history) return [];
   const notes: string[] = [];
@@ -291,23 +306,33 @@ function historyNotes(
   }
   if (history.compare && (history.added || history.changed) && point) {
     const totals = historyTotals(history);
+    // The compared query reads the later point.
+    const later =
+      typeof query?.as_of_commit_seq === "number"
+        ? query.as_of_commit_seq
+        : undefined;
     const keyed = history.key?.length
       ? `paired by ${history.key.map((v) => `?${v}`).join(", ")}: history.added and history.removed hold the entities at one point only, history.changed the entities whose values differ`
       : "history.added and history.removed hold the rows that differ (a changed value is a removed row and an added row)";
     notes.push(
-      `A comparison since ${point}: the rows are the later run; ${keyed}. Totals: added ${totals.added}, removed ${totals.removed}, changed ${totals.changed}.`,
+      `A comparison from ${point} to ${later === undefined ? "the latest commit" : `commit ${later}`}; ${keyed}. Totals: added ${totals.added}, removed ${totals.removed}, changed ${totals.changed}.`,
     );
     const cut = (["added", "removed", "changed"] as const).filter(
       (name) => totals[name] > limit,
     );
     if (cut.length && query) {
+      const after =
+        later === undefined ? "" : ` after={"as_of_commit_seq": ${later}}`;
+      const key = history.key?.length
+        ? ` key=${JSON.stringify(history.key)}`
+        : "";
       notes.push(
-        `Each list shows at most ${limit} entries (${cut.map((name) => `${name}: ${totals[name]}`).join(", ")}; see history.shown). Read them all, page by page, with lbb_query mode=compare query=<the query> before={"as_of_commit_seq": ${history.as_of_commit_seq}}${history.key?.length ? ` key=${JSON.stringify(history.key)}` : ""}.`,
+        `Each list shows at most ${limit} entries (${cut.map((name) => `${name}: ${totals[name]}`).join(", ")}; see history.shown). Read them all, page by page, with lbb_query mode=compare query=<the query> before={"as_of_commit_seq": ${history.as_of_commit_seq}}${after}${key}.`,
       );
     }
     if (history.truncated) {
       notes.push(
-        "The difference is not complete: a run did not read all its rows, or a list held more than 500 entries on the server. Use lbb_query mode=compare for the whole difference.",
+        "The difference is not complete: a point was not read whole, or a list held more than 500 entries on the server. Use lbb_query mode=compare for the whole difference.",
       );
     }
   }
@@ -315,11 +340,14 @@ function historyNotes(
 }
 
 /**
- * `lbb_query mode=question`: the server turns the question into a SPARQL
- * query and, by default, runs it. The rows are bounded as `mode=sparql`
- * bounds them, and `next` continues the same query with `mode=sparql`.
- * With `progress`, the server streams its steps and each step is reported;
- * the result is the same.
+ * `lbb_query mode=question`: the server answers the question in plain words
+ * (`POST /v1/query/ask`). Its model runs queries in a bounded loop and
+ * reads their rows. The result holds the answer, its citations and chart
+ * hint, the steps, and the rows of the query the answer stands on, bounded
+ * as `mode=sparql`
+ * bounds them; `next` continues that query with `mode=sparql`. With
+ * `progress`, the server streams its steps and each step is reported; the
+ * result is the same.
  */
 export async function answerQuestion(
   client: LbbClient,
@@ -328,7 +356,6 @@ export async function answerQuestion(
   progress?: QuestionProgress,
 ) {
   const detail = normalizeDetail(args.detail);
-  const run = args.run ?? true;
   const rowLimit = Math.min(
     args.limit ?? defaultRowLimit(detail),
     QUESTION_MAX_ROWS,
@@ -338,16 +365,14 @@ export async function answerQuestion(
     question: args.question,
     ...(args.context !== undefined ? { context: args.context } : {}),
     ...(args.route !== undefined ? { route: args.route } : {}),
-    run,
-    ...(run ? { limit: rowLimit } : {}),
+    limit: rowLimit,
     ...(args.anchor?.length ? { anchor: args.anchor } : {}),
     ...(args.timeline?.length ? { timeline: args.timeline } : {}),
   };
-  // Each call uses model tokens, and the server corrects a failing query
-  // once, so a failed call is not retried.
+  // Each call uses model tokens, so a failed call is not retried.
   const response =
-    (progress ? await streamedRewrite(target, body, progress) : undefined) ??
-    (await target.request<QuestionResponse>("POST", "/v1/query/rewrite", {
+    (progress ? await streamedAnswer(target, body, progress) : undefined) ??
+    (await target.request<QuestionResponse>("POST", "/v1/query/ask", {
       body,
       retry: false,
       query: { consistency: target.defaultConsistency },
@@ -356,6 +381,20 @@ export async function answerQuestion(
   const { route, query, result } = response;
   const traceId = result?.trace_id ?? null;
   const answer: Record<string, unknown> = {
+    answer: response.answer
+      ? {
+          text: response.answer.text,
+          citations: response.answer.citations ?? [],
+          ...(response.answer.chart ? { chart: response.answer.chart } : {}),
+        }
+      : null,
+    steps: (response.steps ?? []).map((step) => ({
+      n: step.n,
+      tool: step.tool,
+      ok: step.ok,
+      ...(typeof step.rows === "number" ? { rows: step.rows } : {}),
+      ...(step.error ? { error: step.error } : {}),
+    })),
     route: { kind: route.kind, confidence: route.confidence, by: route.by },
     rationale: response.rationale,
     sparql: query?.sparql ?? null,
@@ -384,9 +423,9 @@ export async function answerQuestion(
     );
   }
   notes.push(...historyNotes(response.history, listLimit(detail), query));
-  if (response.error && query) {
+  if (!response.answer) {
     notes.push(
-      "The last query failed (see error). Correct it and run it with lbb_query mode=sparql, or ask again with more context.",
+      "The answer loop stopped before it answered (see error); the rows are the best ones it read. Continue with lbb_query mode=sparql, or ask again with more context.",
     );
   }
   const label = `lbb_query.question: route ${route.kind} (${route.by}, confidence ${route.confidence.toFixed(2)})`;
@@ -423,13 +462,15 @@ export async function answerQuestion(
       textFormat,
     );
   }
-  // No rows to page: the query only, an ASK answer, or no query at all. The
+  // No rows to page: an ASK answer, a comparison, or no query at all. The
   // query text is returned whole.
   const summary = data
     ? `${label}: ran the query`
-    : query
-      ? `${label}: ${response.error ? "the query failed" : "the query, not run"}`
-      : `${label}: no query`;
+    : response.history?.compare
+      ? `${label}: compared two points`
+      : query
+        ? `${label}: no rows`
+        : `${label}: no query`;
   return queryToolResult(
     {
       summary,
