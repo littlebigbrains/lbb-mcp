@@ -1521,6 +1521,90 @@ test("search tools route to the embeddings and search API", async () => {
   }
 });
 
+test("fit source tools route to the fit-sources API", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ fit_sources: [] });
+  });
+  const last = () => {
+    const call = calls.at(-1);
+    return {
+      method: call?.init.method ?? "GET",
+      url: call?.input ?? "",
+      body: JSON.parse(call?.init.body ?? "{}") as Record<string, unknown>,
+    };
+  };
+  const interview = "https://example.org/class/interview";
+  try {
+    // Read only: list, get, preview (no model call).
+    await client.callTool({
+      name: "lbb_fit_sources",
+      arguments: { action: "list" },
+    });
+    assert.match(last().url, /\/v1\/ontology\/fit-sources\?/);
+    await client.callTool({
+      name: "lbb_fit_sources",
+      arguments: { action: "get", name: "interview" },
+    });
+    assert.match(last().url, /name=interview/);
+    await client.callTool({
+      name: "lbb_fit_sources",
+      arguments: { action: "preview", class: interview, from: ["transcript"] },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/ontology\/fit-sources\/preview/);
+    assert.deepEqual(last().body, { class: interview, from: ["transcript"] });
+
+    // Manage: a dry run, a declaration and a refresh.
+    await client.callTool({
+      name: "lbb_fit_sources_manage",
+      arguments: { action: "dry_run", class: interview, context: "interviews" },
+    });
+    assert.deepEqual(last().body, {
+      class: interview,
+      context: "interviews",
+      propose: true,
+    });
+    await client.callTool({
+      name: "lbb_fit_sources_manage",
+      arguments: { action: "declare", class: interview, from: ["transcript"] },
+    });
+    assert.equal(last().method, "PUT");
+    assert.deepEqual(last().body, { class: interview, from: ["transcript"] });
+    await client.callTool({
+      name: "lbb_fit_sources_manage",
+      arguments: { action: "refresh", name: "interview" },
+    });
+    assert.match(
+      last().url,
+      /\/v1\/ontology\/fit-sources\/refresh\?.*name=interview/,
+    );
+    const noClass = await client.callTool({
+      name: "lbb_fit_sources_manage",
+      arguments: { action: "declare" },
+    });
+    assert.equal(noClass.isError, true);
+
+    // Delete asks for the name twice.
+    const before = calls.length;
+    const mismatch = await client.callTool({
+      name: "lbb_fit_sources_delete",
+      arguments: { name: "interview", confirm: "other" },
+    });
+    assert.equal(mismatch.isError, true);
+    assert.equal(calls.length, before, "no request without the confirmation");
+    await client.callTool({
+      name: "lbb_fit_sources_delete",
+      arguments: { name: "interview", confirm: "interview" },
+    });
+    assert.equal(last().method, "DELETE");
+    assert.match(last().url, /confirm=interview/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("lbb_query mode=search honours detail: full returns every hit and its whole text", async () => {
   const long = "x".repeat(900);
   const hits = Array.from({ length: 20 }, (_, i) => ({
@@ -1570,4 +1654,71 @@ test("lbb_query mode=search honours detail: full returns every hit and its whole
   } finally {
     await client.close();
   }
+});
+
+test("lbb_model_choice reads the options, the trials and the switches", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    const path = new URL(input).pathname;
+    if (path.endsWith("/options")) {
+      return ok({
+        jobs: [],
+        available: true,
+        budget_micro_usd: 3_000_000,
+        target_default: 40,
+        target_max: 100,
+      });
+    }
+    if (path.endsWith("/switches")) return ok({ switches: [] });
+    return ok({ trials: [] });
+  };
+  const client = await connect(fetch);
+
+  const options = await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "options", graph: "crm" },
+  });
+  const trials = await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "trials", job: "ask", limit: 5 },
+  });
+  await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "trial", trial_id: "t1" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "trial_call", trial_id: "t1", call_id: "c1" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "switches" },
+  });
+  const missing = await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "trial_call", trial_id: "t1" },
+  });
+
+  assert.notEqual(options.isError, true);
+  assert.equal(
+    (payload(options).data as Schemas["ModelTrialOptionsResponse"]).available,
+    true,
+  );
+  assert.notEqual(trials.isError, true);
+  assert.equal(missing.isError, true);
+  assert.deepEqual(
+    calls.map((call) => {
+      const url = new URL(call.input);
+      return `${call.init.method ?? "GET"} ${url.pathname}?${url.searchParams}`;
+    }),
+    [
+      "GET /v1/models/trials/options?graph=crm",
+      "GET /v1/models/trials?graph=g&job=ask&limit=5",
+      "GET /v1/models/trials/get?graph=g&id=t1",
+      "GET /v1/models/trials/call?graph=g&id=t1&call=c1",
+      "GET /v1/models/switches?graph=g",
+    ],
+  );
+  await client.close();
 });

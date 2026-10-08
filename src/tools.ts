@@ -135,7 +135,7 @@ export function registerLbbTools(
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze, and four tools for writing your own queries: names, describe, commit_at, compare. names: before a query that names an entity (a person, a company), find its IRI with text=<the question or the names>; use the first candidate, not a CONTAINS match on the name. describe: before a query on classes or properties you have not seen, read them with question=<the question> (or classes/properties as IRIs): how many sampled instances hold each property (a filter on a rare one returns few rows), the values of small classes such as stages, examples and schema statements. commit_at: for a question about a date, find the commit of date=YYYY-MM-DD (or moment=RFC 3339), then run mode=sparql as_of_commit_seq=<it>. compare: for what changed between two points, run one SELECT at before and after (default the latest) with key=[the entity variable]; added, removed and changed come with totals and pages (next). Use mode=question when you have a question in plain words and no SPARQL query: the server selects the kind of query (route), writes the SPARQL query from a description of the graph, checks it, runs it, and returns the route, the rationale, the query and its rows. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze, and four tools for writing your own queries: names, describe, commit_at, compare. names: before a query that names an entity (a person, a company), find its IRI with text=<the question or the names>; use the first candidate, not a CONTAINS match on the name. describe: before a query on classes or properties you have not seen, read them with question=<the question> (or classes/properties as IRIs): how many sampled instances hold each property (a filter on a rare one returns few rows), the values of small classes such as stages, examples and schema statements. commit_at: for a question about a date, find the commit of date=YYYY-MM-DD (or moment=RFC 3339), then run mode=sparql as_of_commit_seq=<it>. compare: for what changed between two points, run one SELECT at before and after (default the latest) with key=[the entity variable]; added, removed and changed come with totals and pages (next). Use mode=question when you have a question in plain words and no SPARQL query: the server picks the kind of question (route), runs queries in a bounded loop, reads their rows, and answers in plain words (about 8 s). The result holds the answer with citations and a chart hint (kind, x, y: columns of the rows), the steps, the route, and the query and rows the answer stands on. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Relations are <https://littlebigbrain.com/r/NAME> and types <https://littlebigbrain.com/class/NAME> (both lowercased); entities are content-addressed, so anchor a named one by its rdfs:label rather than building its IRI. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -733,11 +733,293 @@ export function registerLbbTools(
       }),
   );
 
+  // Fit from text: fit sources declared on classes, like embeddings.
+  const fitSetup = {
+    class: z
+      .string()
+      .optional()
+      .describe(
+        "preview/declare/dry_run: the class IRI whose instances hold the text.",
+      ),
+    from: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "preview/declare/dry_run: the fields that hold the text, as embedding paths (transcript, label, about/label, <https://…>). Omit for the long text facts of the class.",
+      ),
+    exclude: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "preview/declare/dry_run: fields to drop from the automatic choice.",
+      ),
+    context: z
+      .string()
+      .optional()
+      .describe(
+        'preview/declare/dry_run: one sentence about the text, e.g. "interviews with employees about their work processes" (at most 500 characters).',
+      ),
+  };
+  const fitDeclaration = (args: {
+    class?: string;
+    name?: string;
+    from?: string[];
+    exclude?: string[];
+    context?: string;
+  }) => {
+    if (!args.class) throw new Error("this action requires class");
+    return {
+      class: args.class,
+      ...(args.name ? { name: args.name } : {}),
+      ...(args.from ? { from: args.from } : {}),
+      ...(args.exclude ? { exclude: args.exclude } : {}),
+      ...(args.context ? { context: args.context } : {}),
+    };
+  };
+
+  server.registerTool(
+    "lbb_fit_sources",
+    {
+      description:
+        "Fit from text, read only: fit sources declared on classes. A fit source names the fields of a class that hold text (transcripts, documents); the server reads every instance, proposes ontology changes (classes, properties, relations) with verbatim quotes, checks them, and files them as ontology suggestions with origin id fit:<name>. list shows each source's status (progress, lag, instances read, proposals kept and dropped, suggestions per status, this month's spend, last error) and the stack's monthly budget; get shows one; preview shows the fields, every candidate field of the class and the text of sample instances, calls no model and stores nothing. Declare, refresh or dry-run with lbb_fit_sources_manage; list the suggestions with lbb_inspect action=ontology_suggestions.",
+      inputSchema: {
+        action: z.enum(["list", "get", "preview"]),
+        name: z.string().optional().describe("get: the fit source name."),
+        ...fitSetup,
+        sample: z.number().int().positive().max(20).optional(),
+        iris: z
+          .array(z.string())
+          .optional()
+          .describe("preview: the instances to show instead of a sample."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: READ_ONLY,
+    },
+    (args) =>
+      run(client, `lbb_fit_sources.${args.action}`, args.detail, () => {
+        const fit = scoped(client, args.graph).ontology.fitSources;
+        switch (args.action) {
+          case "list":
+            return fit.list();
+          case "get":
+            if (!args.name) throw new Error("get requires name");
+            return fit.get(args.name);
+          case "preview":
+            return fit.preview({
+              ...fitDeclaration(args),
+              ...(args.sample ? { sample: args.sample } : {}),
+              ...(args.iris ? { iris: args.iris } : {}),
+            });
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_fit_sources_manage",
+    {
+      description:
+        "Declare, dry-run or refresh a fit source (fit from text). Run lbb_fit_sources action=preview first and show the user the text the fit reads. dry_run runs the models on the first part of up to 3 instances (at most 60 s; truncated when one did not finish) and returns every proposal with its quote, its support score and what the checks made of it; it files nothing but spends model budget. declare sets the class, the fields and the context; the job then reads every instance and files suggestions (an existing source changes only what you name). refresh asks the job to run now and returns the status at once; the job also runs by itself after each published commit, so poll lbb_fit_sources action=get for progress. Nothing changes the ontology until a person accepts a suggestion.",
+      inputSchema: {
+        action: z.enum(["declare", "dry_run", "refresh"]),
+        name: z
+          .string()
+          .optional()
+          .describe("The fit source name (refresh: required)."),
+        ...fitSetup,
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    (args) =>
+      run(client, `lbb_fit_sources_manage.${args.action}`, args.detail, () => {
+        const fit = scoped(client, args.graph).ontology.fitSources;
+        switch (args.action) {
+          case "declare":
+            return fit.declare(fitDeclaration(args));
+          case "dry_run":
+            return fit.preview({ ...fitDeclaration(args), propose: true });
+          case "refresh":
+            if (!args.name) throw new Error("refresh requires name");
+            return fit.refresh(args.name);
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_fit_sources_delete",
+    {
+      description:
+        "Delete a fit source: the fit stops reading its class. The suggestions it filed stay. Ask the user first; confirm must repeat the name.",
+      inputSchema: {
+        name: z.string().describe("The fit source name."),
+        confirm: z.string().describe("The same name again, to confirm."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: DESTRUCTIVE,
+    },
+    ({ name, confirm, detail, graph }) =>
+      run(client, "lbb_fit_sources_delete", detail, () => {
+        if (confirm !== name) {
+          throw new Error("confirm must repeat the fit source name");
+        }
+        return scoped(client, graph).ontology.fitSources.delete(name);
+      }),
+  );
+
+  const modelUse = z
+    .enum(["ask", "route", "rerank", "fit", "label"])
+    .describe(
+      "A use of a model: ask = question answers, route = query routing, rerank = search rerank, fit = ontology fit, label = eval labels.",
+    );
+
+  server.registerTool(
+    "lbb_model_choice",
+    {
+      description:
+        "Model choice, read only: which model each use of a model on the graph runs, and trials that test other models against the graph's ground truth (the checked calls: a person's review, else the judge's verdict). options shows per use the model it runs now (current), LBB's model (default), a switch (switched), its checked calls, and the models a trial can test with their efforts, prices and whether the server holds their key; available=false with a reason when trials cannot run. trials lists the trials, newest first, each with its report: calls compared, both models' right share, mean score (0 to 1), cost per call and median time, the difference with its 95% interval (delta, ci_low, ci_high), outcome (too_few, better, same, worse) and qualifies (meets the bar: at least 20 calls, at most 5 points worse at the low end, no more failures, cheaper or better). trial reads one trial with its compared calls; trial_call reads one call with both answers and the ground truth. switches lists the switched uses. Start, stop, switch or revert with lbb_model_choice_manage.",
+      inputSchema: {
+        action: z.enum([
+          "options",
+          "trials",
+          "trial",
+          "trial_call",
+          "switches",
+        ]),
+        trial_id: z
+          .string()
+          .optional()
+          .describe("trial / trial_call: the trial id."),
+        call_id: z
+          .string()
+          .optional()
+          .describe("trial_call: a call id from the trial's calls."),
+        job: modelUse
+          .optional()
+          .describe("trials: only the trials of this use."),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(50)
+          .optional()
+          .describe("trials: at most this many, newest first (default 20)."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: READ_ONLY,
+    },
+    (args) =>
+      run(client, `lbb_model_choice.${args.action}`, args.detail, () => {
+        const models = scoped(client, args.graph).models;
+        switch (args.action) {
+          case "options":
+            return models.trials.options();
+          case "trials":
+            return models.trials.list({ job: args.job, limit: args.limit });
+          case "trial":
+            if (!args.trial_id) throw new Error("trial requires trial_id");
+            return models.trials.get(args.trial_id);
+          case "trial_call":
+            if (!args.trial_id || !args.call_id) {
+              throw new Error("trial_call requires trial_id and call_id");
+            }
+            return models.trials.call(args.trial_id, args.call_id);
+          case "switches":
+            return models.switches.list();
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_model_choice_manage",
+    {
+      description:
+        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most the trial budget ($3.00 by default) of model and judge cost; an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model.",
+      inputSchema: {
+        action: z.enum(["start", "stop", "switch", "revert"]),
+        provider: z
+          .enum(["anthropic", "typesafe"])
+          .optional()
+          .describe("start: the candidate's provider."),
+        model: z
+          .string()
+          .optional()
+          .describe(
+            "start: the candidate model id, e.g. claude-haiku-5-5 or jev-latest.",
+          ),
+        effort: z
+          .enum(["low", "medium", "high", "xhigh", "max"])
+          .optional()
+          .describe("start: the effort of a Claude candidate."),
+        jobs: z
+          .array(modelUse)
+          .optional()
+          .describe("start: the uses to test it on."),
+        target: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional()
+          .describe("start: the calls to compare (default 40)."),
+        days: z
+          .number()
+          .int()
+          .positive()
+          .max(30)
+          .optional()
+          .describe("start: the days the trial takes new checks (default 14)."),
+        trial_id: z
+          .string()
+          .optional()
+          .describe("stop / switch: the trial id."),
+        job: modelUse
+          .optional()
+          .describe("revert: the use to put back on LBB's model."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    (args) =>
+      run(client, `lbb_model_choice_manage.${args.action}`, args.detail, () => {
+        const models = scoped(client, args.graph).models;
+        switch (args.action) {
+          case "start":
+            if (!args.provider || !args.model) {
+              throw new Error("start requires provider and model");
+            }
+            return models.trials.create({
+              candidate: {
+                provider: args.provider,
+                model: args.model,
+                ...(args.effort ? { effort: args.effort } : {}),
+              },
+              ...(args.jobs ? { jobs: args.jobs } : {}),
+              ...(args.target ? { target: args.target } : {}),
+              ...(args.days ? { days: args.days } : {}),
+            });
+          case "stop":
+            if (!args.trial_id) throw new Error("stop requires trial_id");
+            return models.trials.stop(args.trial_id);
+          case "switch":
+            if (!args.trial_id) throw new Error("switch requires trial_id");
+            return models.switches.create({ trial: args.trial_id });
+          case "revert":
+            if (!args.job) throw new Error("revert requires job");
+            return models.switches.revert(args.job);
+        }
+      }),
+  );
+
   server.registerTool(
     "lbb_evals",
     {
       description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results; a search is done again; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results; a search is done again; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -842,7 +1124,15 @@ export function registerLbbTools(
             "checks_summary / checks: the month, yyyy-mm (UTC). Defaults to the current month.",
           ),
         job: z
-          .enum(["rerank", "route", "rewrite", "fit", "propose", "label"])
+          .enum([
+            "rerank",
+            "route",
+            "ask",
+            "rewrite",
+            "fit",
+            "propose",
+            "label",
+          ])
           .optional()
           .describe("checks: only the checks of one job."),
         verdict: z
