@@ -704,3 +704,66 @@ test("lbb_evals review_check refuses an incomplete review before any request", a
   assert.equal(calls.length, 0);
   await client.close();
 });
+
+test("lbb_model_choice_manage starts, stops, switches and reverts", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ trials: [], switches: [] });
+  };
+  const client = await connect(fetch);
+
+  const started = await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: {
+      action: "start",
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      effort: "low",
+      jobs: ["ask"],
+      target: 20,
+    },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "stop", trial_id: "t1" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "switch", trial_id: "t1", graph: "crm" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "revert", job: "ask" },
+  });
+  const noModel = await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "start", provider: "anthropic" },
+  });
+
+  assert.notEqual(started.isError, true);
+  assert.equal(noModel.isError, true);
+  assert.deepEqual(
+    calls.map((call) => {
+      const url = new URL(call.input);
+      return `${call.init.method} ${url.pathname}?${url.searchParams}`;
+    }),
+    [
+      "POST /v1/models/trials?graph=g",
+      "POST /v1/models/trials/stop?graph=g&id=t1",
+      "POST /v1/models/switches?graph=crm",
+      "POST /v1/models/switches/revert?graph=g&job=ask",
+    ],
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+    candidate: {
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      effort: "low",
+    },
+    jobs: ["ask"],
+    target: 20,
+  });
+  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), { trial: "t1" });
+  await client.close();
+});
