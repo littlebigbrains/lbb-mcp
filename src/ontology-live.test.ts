@@ -12,7 +12,7 @@ import { LbbClient } from "@littlebigbrain/client";
 import { buildLbbServer } from "./server.js";
 import { payload } from "./test-support.js";
 
-// Opt in after `cargo build -p lbb-server`: this starts its own isolated local
+// Opt in after `cargo build -p lbb-server-bin`: this starts its own isolated local
 // server and never accepts a hosted URL or credentials.
 test(
   "MCP creates, reasons over and extends a real ontology; rejects unsupported deletion",
