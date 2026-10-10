@@ -2,6 +2,36 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.12.0 (2026-10-11)
+
+- Require `@littlebigbrain/client` ^0.23.0.
+- New tools for starter workflows and triggered workflows: `lbb_workflows`
+  (read only: `starters`, `list`, `get`, `preview`), `lbb_workflows_manage`
+  (`use`, `refresh`) and `lbb_workflows_delete` (`confirm` must repeat the
+  name). A starter workflow is a template; a triggered workflow is created
+  from one and follows a class of the graph. `search.embed` and
+  `ontology.fit` are the embeddings and fit sources, and their six tools
+  stay unchanged.
+- Developer workflows: `lbb_workflows_manage` gains `pause` and `resume`,
+  and `use` (and the `lbb_workflows` preview) take `workflow`
+  (`workflow_type`, `version`), `owns` (`classes`, `relations`,
+  `properties`) and `batch` (1 to 64) for the starter workflow `workflow`.
+- New read-only tool `lbb_files` for the files of a graph: `list` shows
+  each file with its SHA-256, name, size, `Document` IRI and parse status;
+  `pages` reads the parsed pages of one file (by `sha256`, or by its exact
+  `name`) from `from` to `to` (default one page), each line as
+  `<line id> [x0,y0,x1,y1] <text>` with the box normalized to the page.
+  `contains` keeps the lines that hold a text, `max_lines` caps the lines
+  (default 200, at most 1,000, and about 60,000 characters), and `next`
+  names the `from` and `line_offset` of the next call. Needs the client's
+  `files` (the next `@littlebigbrain/client` release).
+- The `lbb_workflows` description names the document workflows
+  (`documents.parse`, `documents.link`) and `infer.llm`.
+- `lbb_configure` `suggest_ontology_change` takes `facts` (`triplets`,
+  `entity_properties`, `replace_owned`, `summary`): graph facts a person
+  confirms, which accepting commits. `change` may then be empty. The
+  `lbb_inspect` `ontology_suggestions` description names `fact_count`.
+
 ## 0.11.0 (2026-10-08)
 
 Breaking: `lbb_query` with `mode: "question"` always answers in plain words.
