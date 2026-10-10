@@ -1605,6 +1605,251 @@ test("fit source tools route to the fit-sources API", async () => {
   }
 });
 
+test("workflow tools route to the starter and triggered workflow API", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ starters: [] });
+  });
+  const last = () => {
+    const call = calls.at(-1);
+    return {
+      method: call?.init.method ?? "GET",
+      url: call?.input ?? "",
+      body: JSON.parse(call?.init.body ?? "{}") as Record<string, unknown>,
+    };
+  };
+  try {
+    // Read only: starters, list, get, preview (no model call).
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "starters" },
+    });
+    assert.equal(last().method, "GET");
+    assert.match(last().url, /\/v1\/workflows\/starters\?/);
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "list", graph: "crm" },
+    });
+    assert.match(last().url, /\/v1\/workflows\/triggered\?graph=crm$/);
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "get", starter: "ontology.fit", name: "interview" },
+    });
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/triggered\?.*starter=ontology\.fit&name=interview/,
+    );
+    const noName = await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "get", starter: "ontology.fit" },
+    });
+    assert.equal(noName.isError, true);
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: {
+        action: "preview",
+        starter: "search.embed",
+        class: "Ticket",
+        fields: ["title", "body"],
+        sample: 2,
+      },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/workflows\/triggered\/preview/);
+    assert.deepEqual(last().body, {
+      starter: "search.embed",
+      watch: { class: "Ticket", fields: ["title", "body"] },
+      sample: 2,
+    });
+    assert.equal("propose" in last().body, false, "a read never runs models");
+
+    // Manage: use and refresh.
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "use",
+        starter: "ontology.fit",
+        class: "Interview",
+        fields: ["transcript"],
+        params: { context: "interviews with employees" },
+        budget_usd_per_month: 5,
+      },
+    });
+    assert.equal(last().method, "PUT");
+    assert.match(last().url, /\/v1\/workflows\/triggered\?/);
+    assert.deepEqual(last().body, {
+      starter: "ontology.fit",
+      watch: { class: "Interview", fields: ["transcript"] },
+      params: { context: "interviews with employees" },
+      budget_usd_per_month: 5,
+    });
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "refresh",
+        starter: "ontology.fit",
+        name: "interview",
+      },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/triggered\/refresh\?.*starter=ontology\.fit&name=interview/,
+    );
+    const before = calls.length;
+    const noStarter = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "use", class: "Interview" },
+    });
+    assert.equal(noStarter.isError, true);
+    const fieldsWithoutClass = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "use",
+        starter: "search.embed",
+        fields: ["label"],
+      },
+    });
+    assert.equal(fieldsWithoutClass.isError, true);
+    const noRefreshName = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "refresh", starter: "ontology.fit" },
+    });
+    assert.equal(noRefreshName.isError, true);
+    assert.equal(calls.length, before, "no request for an incomplete call");
+
+    // Delete asks for the name twice.
+    const mismatch = await client.callTool({
+      name: "lbb_workflows_delete",
+      arguments: {
+        starter: "ontology.fit",
+        name: "interview",
+        confirm: "other",
+      },
+    });
+    assert.equal(mismatch.isError, true);
+    assert.equal(calls.length, before, "no request without the confirmation");
+    await client.callTool({
+      name: "lbb_workflows_delete",
+      arguments: {
+        starter: "ontology.fit",
+        name: "interview",
+        confirm: "interview",
+      },
+    });
+    assert.equal(last().method, "DELETE");
+    assert.match(last().url, /\/v1\/workflows\/triggered\?/);
+    assert.match(
+      last().url,
+      /starter=ontology\.fit&name=interview&confirm=interview/,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("a developer workflow is created with its workflow, owned outputs and batch, and pauses and resumes", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ starter: "workflow", name: "notes" });
+  });
+  const last = () => {
+    const call = calls.at(-1);
+    return {
+      method: call?.init.method ?? "GET",
+      url: call?.input ?? "",
+      body: JSON.parse(call?.init.body ?? "{}") as Record<string, unknown>,
+    };
+  };
+  const developer = {
+    starter: "workflow",
+    name: "notes",
+    class: "Note",
+    fields: ["body"],
+    workflow: { workflow_type: "word-count", version: "v1" },
+    owns: { properties: ["word_count"] },
+    batch: 8,
+  };
+  const sent = {
+    starter: "workflow",
+    name: "notes",
+    watch: { class: "Note", fields: ["body"] },
+    workflow: { workflow_type: "word-count", version: "v1" },
+    owns: { properties: ["word_count"] },
+    batch: 8,
+  };
+  try {
+    // A preview takes the same settings: it checks the request.
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "preview", ...developer },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/workflows\/triggered\/preview/);
+    assert.deepEqual(last().body, sent);
+
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "use", graph: "crm", ...developer },
+    });
+    assert.equal(last().method, "PUT");
+    assert.match(last().url, /\/v1\/workflows\/triggered\?graph=crm$/);
+    assert.deepEqual(last().body, sent);
+
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "pause", starter: "workflow", name: "notes" },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/triggered\/pause\?.*starter=workflow&name=notes$/,
+    );
+    assert.deepEqual(last().body, { paused: true });
+
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "resume",
+        starter: "workflow",
+        name: "notes",
+        graph: "crm",
+      },
+    });
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/triggered\/pause\?graph=crm&starter=workflow&name=notes$/,
+    );
+    assert.deepEqual(last().body, { paused: false });
+
+    const before = calls.length;
+    const noName = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "pause", starter: "workflow" },
+    });
+    assert.equal(noName.isError, true);
+    const bigBatch = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "use", ...developer, batch: 65 },
+    });
+    assert.equal(bigBatch.isError, true);
+    const looseWorkflow = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "use",
+        ...developer,
+        workflow: { workflow_type: "word-count" },
+      },
+    });
+    assert.equal(looseWorkflow.isError, true);
+    assert.equal(calls.length, before, "no request for an incomplete call");
+  } finally {
+    await client.close();
+  }
+});
+
 test("lbb_query mode=search honours detail: full returns every hit and its whole text", async () => {
   const long = "x".repeat(900);
   const hits = Array.from({ length: 20 }, (_, i) => ({

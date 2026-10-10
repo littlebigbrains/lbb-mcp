@@ -18,6 +18,7 @@ import {
   type NamesArgs,
 } from "./query-tools.js";
 import { registerRdfTool } from "./rdf-tool.js";
+import { registerFilesTool } from "./files-tool.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
   DESTRUCTIVE,
@@ -67,11 +68,12 @@ export function registerLbbTools(
   options: LbbServerOptions = {},
 ): void {
   registerRdfTool(server, client);
+  registerFilesTool(server, client);
   server.registerTool(
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, ontology_suggestions. graphs works before bootstrap; ontology_suggestions lists the ontology change suggestions that wait for review (or were decided). publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's attributes and current relationships from the RDF read. For a node's past values, run SPARQL with as_of_commit_seq through lbb_query. Use lbb_query with SPARQL property paths for precise path selection.",
+        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, ontology_suggestions. graphs works before bootstrap; ontology_suggestions lists the ontology change suggestions that wait for review (or were decided); fact_count is how many graph facts (triplets and entity property rows) accepting one commits, and identity_count how many identities it links. publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity returns one node's attributes and current relationships from the RDF read. For a node's past values, run SPARQL with as_of_commit_seq through lbb_query. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -869,6 +871,245 @@ export function registerLbbTools(
       }),
   );
 
+  // Starter workflows and triggered workflows: one API over everything that
+  // runs when a class of the graph changes. search.embed and ontology.fit
+  // are the embeddings and fit sources above, through the same stored
+  // documents.
+  const workflowSetup = {
+    starter: z
+      .string()
+      .optional()
+      .describe(
+        "The starter workflow's catalog id from action=starters, e.g. search.embed (embeddings on a class), ontology.fit (fit from text) or workflow (a developer workflow: your worker's workflow gets the instances). get/preview/use/refresh/pause/resume: required.",
+      ),
+    class: z
+      .string()
+      .optional()
+      .describe(
+        "preview/use: the class whose instances the workflow watches (an IRI, or a name the ontology knows). Required unless the starter workflow's watch is fixed.",
+      ),
+    fields: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "preview/use: the fields whose change triggers the workflow, as embedding paths (transcript, label, about/label, <https://…>). Omit for the starter workflow's own choice.",
+      ),
+    exclude: z
+      .array(z.string())
+      .optional()
+      .describe("preview/use: fields to drop from the automatic choice."),
+    params: jsonObjectSchema
+      .optional()
+      .describe(
+        'preview/use: the starter workflow\'s own settings, as listed in its catalog entry: search.embed takes model, dim and title; ontology.fit takes context (one sentence about the text, e.g. {"context": "interviews with employees"}); workflow takes none.',
+      ),
+    workflow: z
+      .object({
+        workflow_type: z
+          .string()
+          .describe("The workflow type your worker serves, e.g. word-count."),
+        version: z.string().describe("Its version, e.g. v1."),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "preview/use, developer workflow (starter=workflow) only, required there: the workflow of your worker that receives the messages. Creating it creates the instance starter.<name>.",
+      ),
+    owns: z
+      .object({
+        classes: z.array(z.string()).max(64).optional(),
+        relations: z.array(z.string()).max(64).optional(),
+        properties: z.array(z.string()).max(64).optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "preview/use, developer workflow only: what your code writes. classes it creates instances of, relations it writes as out-edges of the watched instances, properties it writes on them. Owned outputs never trigger the workflow itself.",
+      ),
+    batch: z
+      .number()
+      .int()
+      .min(1)
+      .max(64)
+      .optional()
+      .describe(
+        "preview/use, developer workflow only: instances per message, 1 to 64 (default 16).",
+      ),
+  };
+  const workflowRequest = (args: {
+    starter?: string;
+    name?: string;
+    class?: string;
+    fields?: string[];
+    exclude?: string[];
+    params?: Record<string, unknown>;
+    gate?: number;
+    budget_usd_per_month?: number;
+    workflow?: { workflow_type: string; version: string };
+    owns?: { classes?: string[]; relations?: string[]; properties?: string[] };
+    batch?: number;
+  }) => {
+    if (!args.starter) throw new Error("this action requires starter");
+    if (!args.class && (args.fields || args.exclude)) {
+      throw new Error("fields and exclude need class");
+    }
+    return {
+      starter: args.starter,
+      ...(args.name ? { name: args.name } : {}),
+      ...(args.class
+        ? {
+            watch: {
+              class: args.class,
+              ...(args.fields ? { fields: args.fields } : {}),
+              ...(args.exclude ? { exclude: args.exclude } : {}),
+            },
+          }
+        : {}),
+      ...(args.params ? { params: args.params } : {}),
+      ...(args.gate !== undefined ? { gate: { below: args.gate } } : {}),
+      ...(args.budget_usd_per_month !== undefined
+        ? { budget_usd_per_month: args.budget_usd_per_month }
+        : {}),
+      ...(args.workflow ? { workflow: args.workflow } : {}),
+      ...(args.owns ? { owns: args.owns } : {}),
+      ...(args.batch !== undefined ? { batch: args.batch } : {}),
+    };
+  };
+  const workflowRef = (args: { starter?: string; name?: string }) => {
+    if (!args.starter || !args.name) {
+      throw new Error("this action requires starter and name");
+    }
+    return { starter: args.starter, name: args.name };
+  };
+
+  server.registerTool(
+    "lbb_workflows",
+    {
+      description:
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link writes DocEntry and DocMention instances and links each mention to its entry, and infer.llm fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
+      inputSchema: {
+        action: z.enum(["starters", "list", "get", "preview"]),
+        name: z
+          .string()
+          .optional()
+          .describe(
+            "get: the triggered workflow's name. preview: the name a new workflow would get.",
+          ),
+        ...workflowSetup,
+        sample: z
+          .number()
+          .int()
+          .positive()
+          .max(50)
+          .optional()
+          .describe("preview: how many sample instances to show."),
+        iris: z
+          .array(z.string())
+          .optional()
+          .describe("preview: the instances to show instead of a sample."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: READ_ONLY,
+    },
+    (args) =>
+      run(client, `lbb_workflows.${args.action}`, args.detail, () => {
+        const workflows = scoped(client, args.graph).workflows;
+        switch (args.action) {
+          case "starters":
+            return workflows.starters.list();
+          case "list":
+            return workflows.triggered.list();
+          case "get":
+            return workflows.triggered.get(workflowRef(args));
+          case "preview":
+            return workflows.triggered.preview({
+              ...workflowRequest(args),
+              ...(args.sample ? { sample: args.sample } : {}),
+              ...(args.iris ? { iris: args.iris } : {}),
+            });
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_workflows_manage",
+    {
+      description:
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, infer.llm) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link or infer.llm) from reading and sending; resume lets it catch up. search.embed and ontology.fit cannot be paused.",
+      inputSchema: {
+        action: z.enum(["use", "refresh", "pause", "resume"]),
+        name: z
+          .string()
+          .optional()
+          .describe(
+            "The triggered workflow's name, [a-z0-9][a-z0-9-]{0,62} (refresh, pause, resume: required; use: omit for the class's local name).",
+          ),
+        ...workflowSetup,
+        gate: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe(
+            "use: outputs below this confidence go to review instead of the graph, for a workflow with a review gate.",
+          ),
+        budget_usd_per_month: z
+          .number()
+          .nonnegative()
+          .optional()
+          .describe(
+            "use: a monthly model budget in USD for this workflow, below the stack's own.",
+          ),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: MUTATING,
+    },
+    (args) =>
+      run(client, `lbb_workflows_manage.${args.action}`, args.detail, () => {
+        const workflows = scoped(client, args.graph).workflows;
+        switch (args.action) {
+          case "use":
+            return workflows.starters.use(workflowRequest(args));
+          case "refresh":
+            return workflows.triggered.refresh(workflowRef(args));
+          case "pause":
+            return workflows.triggered.pause(workflowRef(args), true);
+          case "resume":
+            return workflows.triggered.pause(workflowRef(args), false);
+        }
+      }),
+  );
+
+  server.registerTool(
+    "lbb_workflows_delete",
+    {
+      description:
+        "Delete a triggered workflow: it stops following its class, and what it wrote stays. Deleting search.embed deletes the embedding and its vectors, so its class stops being searchable; the suggestions an ontology.fit filed stay; a developer workflow leaves its workflow instance and the facts its code wrote. Ask the user first; confirm must repeat the name.",
+      inputSchema: {
+        starter: z
+          .string()
+          .describe("The starter workflow's catalog id, e.g. search.embed."),
+        name: z.string().describe("The triggered workflow's name."),
+        confirm: z.string().describe("The same name again, to confirm."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: DESTRUCTIVE,
+    },
+    ({ starter, name, confirm, detail, graph }) =>
+      run(client, "lbb_workflows_delete", detail, () => {
+        if (confirm !== name) {
+          throw new Error("confirm must repeat the workflow name");
+        }
+        return scoped(client, graph).workflows.triggered.delete({
+          starter,
+          name,
+        });
+      }),
+  );
+
   const modelUse = z
     .enum(["ask", "route", "rerank", "fit", "label"])
     .describe(
@@ -1483,7 +1724,7 @@ export function registerLbbTools(
     "lbb_configure",
     {
       description:
-        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions), get_rewrite_profile and set_rewrite_profile (the graph's notes and up to 20 worked question-to-SPARQL examples that lbb_query mode=question reads for every question; pass the version you read as expected_version). define, evolve, publish and set_rewrite_profile support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
+        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions; facts files graph facts for review, which accepting commits after the change, and change may be empty when facts is set), get_rewrite_profile and set_rewrite_profile (the graph's notes and up to 20 worked question-to-SPARQL examples that lbb_query mode=question reads for every question; pass the version you read as expected_version). define, evolve, publish and set_rewrite_profile support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
       inputSchema: configureWireSchema,
       annotations: MUTATING,
     },
@@ -1506,10 +1747,16 @@ export function registerLbbTools(
         }
         if (args.action === "suggest_ontology_change") {
           const agent = args.agent ?? "mcp agent";
+          const change = args.change ?? [];
+          if (!change.length && !args.facts)
+            throw new Error(
+              "suggest_ontology_change needs change, facts, or both",
+            );
           return scoped(client, args.graph).ontology.suggestions.create({
             title: args.title,
             rationale: args.rationale ?? "",
-            change: args.change,
+            change,
+            ...(args.facts ? { facts: args.facts } : {}),
             origin: { kind: "agent", id: agent, label: agent },
             ...(args.anchor ? { anchor: args.anchor } : {}),
             ...(args.key ? { key: args.key } : {}),

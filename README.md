@@ -155,6 +155,10 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_fit_sources` | Inspect fit from text and preview the text the fit reads. |
 | `lbb_fit_sources_manage` | Declare, dry-run or refresh a fit source. |
 | `lbb_fit_sources_delete` | Delete a fit source; its suggestions stay. |
+| `lbb_workflows` | List the starter workflows this server offers and the workflows created from them on a graph (triggered workflows), read one with its status, and preview a new one. |
+| `lbb_workflows_manage` | Create a workflow from a starter workflow on a class (a developer workflow with its workflow type, owned outputs and batch), ask it to run now, or pause and resume a developer workflow. |
+| `lbb_workflows_delete` | Delete a triggered workflow. What it wrote stays. |
+| `lbb_files` | List the files of a graph, and read the parsed pages of one: each line with its id, its box on the page and its text. |
 | `lbb_commit` | Write or retract JSON facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), publish validation rules, or keep the graph's notes and worked examples for questions in plain words (`get_rewrite_profile`, `set_rewrite_profile`). |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. Read the model checks of a graph, and agree with or correct a check that the user confirmed. |

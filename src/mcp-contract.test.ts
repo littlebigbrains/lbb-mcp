@@ -24,6 +24,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_embeddings_delete",
     "lbb_embeddings_manage",
     "lbb_evals",
+    "lbb_files",
     "lbb_fit_sources",
     "lbb_fit_sources_delete",
     "lbb_fit_sources_manage",
@@ -33,6 +34,9 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_models",
     "lbb_query",
     "lbb_rdf",
+    "lbb_workflows",
+    "lbb_workflows_delete",
+    "lbb_workflows_manage",
   ]);
 
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -52,6 +56,41 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     byName.lbb_fit_sources_delete.annotations?.destructiveHint,
     true,
   );
+  assert.equal(byName.lbb_workflows.annotations?.readOnlyHint, true);
+  assert.deepEqual(
+    (
+      byName.lbb_workflows.inputSchema as {
+        properties: Record<string, { enum?: string[] }>;
+      }
+    ).properties.action?.enum,
+    ["starters", "list", "get", "preview"],
+  );
+  // Files: read only, the list and the parsed pages with their boxes.
+  assert.equal(byName.lbb_files.annotations?.readOnlyHint, true);
+  assert.deepEqual(
+    (
+      byName.lbb_files.inputSchema as {
+        properties: Record<string, { enum?: string[] }>;
+      }
+    ).properties.action?.enum,
+    ["list", "pages"],
+  );
+  assert.equal(byName.lbb_workflows_manage.annotations?.readOnlyHint, false);
+  assert.equal(byName.lbb_workflows_manage.annotations?.destructiveHint, false);
+  assert.equal(byName.lbb_workflows_delete.annotations?.destructiveHint, true);
+  // Developer workflows: the workflow settings, and pause and resume.
+  const workflowManage = byName.lbb_workflows_manage.inputSchema as {
+    properties: Record<string, { type?: string; enum?: string[] }>;
+  };
+  assert.deepEqual(workflowManage.properties.action?.enum, [
+    "use",
+    "refresh",
+    "pause",
+    "resume",
+  ]);
+  for (const field of ["workflow", "owns"])
+    assert.equal(workflowManage.properties[field]?.type, "object", field);
+  assert.equal(workflowManage.properties.batch?.type, "integer");
   assert.equal(byName.lbb_model_choice.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_model_choice_manage.annotations?.readOnlyHint, false);
   assert.equal(
@@ -143,7 +182,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "1f8d6c3b22b2ccdd8d3daf652024d96aa2730f6616c88ac5e7f8de18ed2a030c",
+    "0fcf909822359b3b93d476a676d0a44d3c81626a17755a37baa66da09336b228",
   );
   await client.close();
 });
@@ -233,6 +272,11 @@ test("dispatch tools advertise real object input schemas (regression: object arg
     "agents can file ontology change suggestions",
   );
   assert.equal(configure.properties.change?.type, "array");
+  assert.equal(
+    configure.properties.facts?.type,
+    "object",
+    "agents can file graph facts for review",
+  );
   assert.ok(inspect.properties.action?.enum?.includes("ontology_suggestions"));
   assert.ok(
     configure.properties.action?.enum?.includes("list_starters") &&

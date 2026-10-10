@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type FetchLike } from "@littlebigbrain/client";
-import { connect, ok, type Call } from "./test-support.js";
+import { connect, ok, payload, type Call } from "./test-support.js";
 
 test("lbb_configure defines ontologies and atomically publishes schemas", async () => {
   const calls: Call[] = [];
@@ -582,6 +582,107 @@ test("lbb_inspect ontology_suggestions lists by status", async () => {
   assert.match(calls[0].input, /status=open/);
   assert.match(calls[0].input, /limit=50/);
   assert.equal(calls[0].init.method, "GET");
+  await client.close();
+});
+
+test("lbb_inspect ontology_suggestions shows how many facts each review item commits", async () => {
+  const client = await connect(async () =>
+    ok({
+      ontology_version: 3,
+      counts: { open: 1, accepted: 0, dismissed: 0, superseded: 0 },
+      suggestions: [
+        {
+          suggestion_id: "sg_1",
+          key: "starter:rooms/r-1-04",
+          status: "open",
+          title: "Link room R 1.04",
+          anchor: { kind: "ontology" },
+          origin: { kind: "agent", id: "starter:rooms" },
+          change: [],
+          identity_count: 0,
+          fact_count: 3,
+          comment_count: 0,
+          revision: 1,
+          created_at: "2026-10-09T10:00:00Z",
+          updated_at: "2026-10-09T10:00:00Z",
+        },
+      ],
+      truncated: false,
+    }),
+  );
+
+  const result = await client.callTool({
+    name: "lbb_inspect",
+    arguments: { action: "ontology_suggestions" },
+  });
+
+  assert.notEqual(result.isError, true);
+  const listed = payload(result).data as {
+    suggestions: { fact_count: number }[];
+  };
+  assert.equal(listed.suggestions[0]?.fact_count, 3);
+  await client.close();
+});
+
+test("lbb_configure suggest_ontology_change files graph facts for review without a change", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ suggestion_id: "sg_1", status: "open" });
+  });
+  const facts = {
+    triplets: [
+      {
+        source: { type: "Room", name: "R 1.04" },
+        relation: "HAS_COMPONENT",
+        target: { type: "Component", name: "Fire door T30" },
+        confidence: 0.62,
+        evidence: { text: "Tür T30 RS", source_id: "doc:plan-104" },
+      },
+    ],
+    replace_owned: {
+      subjects: [{ type: "Room", name: "R 1.04" }],
+      relations: ["HAS_COMPONENT"],
+    },
+    summary: "One component of room R 1.04",
+  };
+
+  const filed = await client.callTool({
+    name: "lbb_configure",
+    arguments: {
+      action: "suggest_ontology_change",
+      title: "Link room R 1.04",
+      agent: "starter:rooms",
+      key: "starter:rooms/r-1-04",
+      facts,
+    },
+  });
+  assert.notEqual(filed.isError, true);
+  assert.equal(calls.length, 1);
+  const body = JSON.parse(calls[0].init.body ?? "{}");
+  assert.deepEqual(body.change, []);
+  assert.deepEqual(body.facts, facts);
+  assert.equal(body.key, "starter:rooms/r-1-04");
+
+  const empty = await client.callTool({
+    name: "lbb_configure",
+    arguments: { action: "suggest_ontology_change", title: "Nothing" },
+  });
+  assert.equal(empty.isError, true);
+  assert.match(
+    (empty.content as { type: string; text: string }[])[0].text,
+    /needs change, facts, or both/,
+  );
+  const unknownField = await client.callTool({
+    name: "lbb_configure",
+    arguments: {
+      action: "suggest_ontology_change",
+      title: "Link",
+      facts: { ...facts, commit: true },
+    },
+  });
+  assert.equal(unknownField.isError, true);
+  assert.equal(calls.length, 1, "a refused call sends no request");
   await client.close();
 });
 

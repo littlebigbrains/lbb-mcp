@@ -407,6 +407,89 @@ export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
     .strict(),
 ]);
 
+const namedEntityInputSchema = z
+  .object({
+    type: z.string(),
+    name: z.string(),
+    key: z
+      .string()
+      .optional()
+      .describe("The record's external key, when it has one"),
+  })
+  .strict();
+
+/** Graph facts a review item proposes; accepting commits them. */
+export const suggestedFactsSchema = z
+  .object({
+    triplets: z
+      .array(
+        z
+          .object({
+            source: namedEntityInputSchema,
+            relation: z.string(),
+            target: namedEntityInputSchema,
+            confidence: z.number().min(0).max(1).optional(),
+            evidence: z
+              .unknown()
+              .optional()
+              .describe(
+                "Why the link holds: a string, or { text, source_id } as lbb_commit takes it",
+              ),
+          })
+          .passthrough(),
+      )
+      .max(200)
+      .optional()
+      .describe("Links to commit, as lbb_commit takes triplets"),
+    entity_properties: z
+      .array(jsonObjectSchema)
+      .max(200)
+      .optional()
+      .describe(
+        "Fields to commit, each { type, name, properties: { field: value } } as lbb_commit takes them",
+      ),
+    replace_owned: z
+      .object({
+        subjects: z
+          .array(namedEntityInputSchema)
+          .max(1000)
+          .describe("The records this write is for"),
+        relations: z
+          .array(z.string())
+          .max(64)
+          .optional()
+          .describe(
+            "Owned relations: their current out-edges of the subjects that the facts do not write again are removed",
+          ),
+        properties: z
+          .array(z.string())
+          .max(64)
+          .optional()
+          .describe(
+            "Owned fields: the ones the facts do not set on a subject are removed",
+          ),
+        retract_entities: z
+          .array(namedEntityInputSchema)
+          .max(1000)
+          .optional()
+          .describe("Records the producer made and no longer makes"),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Replace the producer's owned edges and fields on its subjects in the same commit",
+      ),
+    summary: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("One line about the facts for the reviewer"),
+  })
+  .strict()
+  .describe(
+    "Graph facts a person confirms: accepting commits them after the change (at most 200 triplets and property rows together). Records graphs only",
+  );
+
 export const inspectInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("guide"), ...readScope }).strict(),
   z
@@ -945,11 +1028,12 @@ export const configureInputSchema = z.discriminatedUnion("action", [
         .describe("Short imperative text, e.g. 'Add class Contractor'"),
       change: z
         .array(ontologyEvolveOpSchema)
-        .min(1)
         .max(128)
+        .optional()
         .describe(
-          "The ontology operations a person applies by accepting, in order (same shapes as evolve_ontology ops)",
+          "The ontology operations a person applies by accepting, in order (same shapes as evolve_ontology ops). Up to 128; may be empty or absent when facts is set",
         ),
+      facts: suggestedFactsSchema.optional(),
       rationale: z
         .string()
         .max(4000)
