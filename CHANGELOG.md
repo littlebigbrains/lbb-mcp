@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- The `lbb_workflows` and `lbb_workflows_manage` descriptions name
+  `values.extract`, the new id of the starter workflow Values from text
+  (formerly `infer.llm`, which the server still accepts).
+
 ## 0.12.0 (2026-10-11)
 
 - Require `@littlebigbrain/client` ^0.23.0.
