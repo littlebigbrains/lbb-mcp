@@ -182,7 +182,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "acf15abbf129d0d38dfec5cf239e74b623b44b519a573e91b1dfcecd41e4ee7f",
+    "a7065158aef998248b57a074adbb5d85c46faea37334c82ae18399464bb7ed0d",
   );
   await client.close();
 });

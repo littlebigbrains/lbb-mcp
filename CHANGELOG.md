@@ -7,6 +7,9 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 - The `lbb_workflows` and `lbb_workflows_manage` descriptions name
   `values.extract`, the new id of the starter workflow Values from text
   (formerly `infer.llm`, which the server still accepts).
+- The `lbb_workflows` description names `documents.map`, the starter
+  workflow that proposes the links of `documents.link` as `FactProposal`
+  instances in the graph's own ontology.
 
 ## 0.12.0 (2026-10-11)
 
