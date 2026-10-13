@@ -2,9 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
-## Unreleased
+## 0.13.0 (2026-10-13)
 
-- Require `@littlebigbrain/client` ^0.24.0.
+- `lbb_evals` gains `run_answers` (`answers`, `runner`): it checks your own
+  agent's answers to the question goldens. `results` takes `runner`, and
+  `label` takes `route` with an answer label that names the query.
+- Require `@littlebigbrain/client` ^0.25.0.
 - The `lbb_workflows` and `lbb_workflows_manage` descriptions name
   `values.extract`, the new id of the starter workflow Values from text
   (formerly `infer.llm`, which the server still accepts).

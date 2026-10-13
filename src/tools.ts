@@ -986,7 +986,7 @@ export function registerLbbTools(
     "lbb_workflows",
     {
       description:
-        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link writes DocEntry and DocMention instances and links each mention to its entry, documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
       inputSchema: {
         action: z.enum(["starters", "list", "get", "preview"]),
         name: z
@@ -1260,7 +1260,7 @@ export function registerLbbTools(
     "lbb_evals",
     {
       description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results; a search is done again; new results open a review trace. judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -1273,6 +1273,7 @@ export function registerLbbTools(
           "accept",
           "delete",
           "run",
+          "run_answers",
           "results",
           "settings",
           "checks_summary",
@@ -1323,6 +1324,66 @@ export function registerLbbTools(
           .describe(
             "golden: the query to freeze (the search text for surface=search). label: with valid=false and no item, the right query for the question; the server checks and runs it once.",
           ),
+        route: z
+          .enum([
+            "lookup",
+            "aggregate",
+            "search",
+            "history",
+            "schema",
+            "unanswerable",
+          ])
+          .optional()
+          .describe(
+            "label: with valid=true, or valid=false with sparql, the route the question expects.",
+          ),
+        answers: z
+          .array(
+            z
+              .object({
+                golden: z.string().min(1),
+                sparql: z.string().optional(),
+                entailment: z
+                  .enum(["none", "subclass", "rdfs", "owl"])
+                  .optional(),
+                as_of_commit_seq: z.number().int().nonnegative().optional(),
+                route: z
+                  .object({
+                    kind: z.enum([
+                      "lookup",
+                      "aggregate",
+                      "search",
+                      "history",
+                      "schema",
+                      "unanswerable",
+                    ]),
+                    confidence: z.number(),
+                    by: z.enum(["caller", "router", "rewriter"]),
+                    probabilities: z.record(z.string(), z.number()).optional(),
+                  })
+                  .strict()
+                  .optional(),
+                reply: z
+                  .object({
+                    text: z.string(),
+                    citations: z.array(z.string()).optional(),
+                  })
+                  .optional(),
+                error: z.string().optional(),
+                cost_micro_usd: z.number().int().nonnegative().optional(),
+              })
+              .strict(),
+          )
+          .optional()
+          .describe(
+            "run_answers: one answer per question golden your app asked: golden (its id), sparql (the query whose rows hold the answer; leave it out when the question is unanswerable), entailment, as_of_commit_seq, route (as the router returned it), reply, error (your app failed), cost_micro_usd.",
+          ),
+        runner: z
+          .string()
+          .optional()
+          .describe(
+            "run_answers / results: your app's name, lower-case letters, digits and -, at most 40 characters (default app). results without runner reads the server's runs.",
+          ),
         surface: z
           .enum(["sparql", "search"])
           .optional()
@@ -1357,7 +1418,7 @@ export function registerLbbTools(
           .enum(["strong", "eventual"])
           .optional()
           .describe(
-            "run / accept: strong reads the head, eventual the last published commit.",
+            "run / run_answers / accept: strong reads the head, eventual the last published commit.",
           ),
         month: yearMonthSchema
           .optional()
@@ -1429,6 +1490,9 @@ export function registerLbbTools(
       by,
       note,
       sparql,
+      route,
+      answers,
+      runner,
       surface,
       embedding,
       top_k,
@@ -1474,12 +1538,22 @@ export function registerLbbTools(
               throw new Error(
                 "label takes sparql (the right query) only with valid=false and no item",
               );
+            if (
+              route !== undefined &&
+              (item ||
+                items?.length ||
+                (valid !== true && sparql === undefined))
+            )
+              throw new Error(
+                "label takes route only with valid=true, or valid=false with sparql, and no item",
+              );
             return target.evals.label(trace_id, {
               ...(item ? { item, valid } : {}),
               ...(items?.length ? { items } : {}),
               // The answer of a question as a whole.
               ...(!item && !items?.length ? { valid } : {}),
               ...(sparql !== undefined ? { sparql } : {}),
+              ...(route !== undefined ? { route } : {}),
               by,
               note,
             });
@@ -1506,8 +1580,15 @@ export function registerLbbTools(
             return target.evals.deleteGolden(golden_id);
           case "run":
             return target.evals.run({ consistency });
+          case "run_answers":
+            if (!answers?.length)
+              throw new Error("run_answers requires answers");
+            return target.evals.runAnswers(
+              { answers, ...(runner ? { runner } : {}) },
+              { consistency },
+            );
           case "results":
-            return target.evals.results({ limit });
+            return target.evals.results({ limit, runner });
           case "settings":
             return target.evals.settings();
           case "checks_summary":
