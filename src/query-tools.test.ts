@@ -18,23 +18,23 @@ const uri = (value: string) => ({ type: "uri", value });
 const literal = (value: string) => ({ type: "literal", value });
 
 test("lbb_query mode=names groups the candidates by name", async () => {
-  const korn = {
-    iri: "https://x.test/e/korn",
-    label: "David Korn",
+  const lindqvist = {
+    iri: "https://x.test/e/lindqvist",
+    label: "Mara Lindqvist",
     class: "https://x.test/class/Person",
     score: 1,
     by: "exact",
   };
   const document = {
-    ...korn,
-    iri: "https://x.test/e/doc-korn",
+    ...lindqvist,
+    iri: "https://x.test/e/doc-lindqvist",
     class: "https://x.test/class/SourceDocument",
   };
   const { fetch, calls } = recorder([
     {
       candidates: [
-        { text: "David Korn", ...korn },
-        { text: "David Korn", ...document },
+        { text: "Mara Lindqvist", ...lindqvist },
+        { text: "Mara Lindqvist", ...document },
       ],
       index_ready: true,
       index_names: 8,
@@ -49,19 +49,19 @@ test("lbb_query mode=names groups the candidates by name", async () => {
       name: "lbb_query",
       arguments: {
         mode: "names",
-        text: "Summarize David Korn's deals",
+        text: "Summarize Mara Lindqvist's deals",
         limit: 3,
       },
     });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.equal(calls[0].input, "http://h/v1/query/names?graph=g");
     assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
-      text: "Summarize David Korn's deals",
+      text: "Summarize Mara Lindqvist's deals",
       limit: 3,
     });
     const body = payload(result) as Notes;
     assert.deepEqual(body.data, {
-      names: [{ text: "David Korn", candidates: [korn, document] }],
+      names: [{ text: "Mara Lindqvist", candidates: [lindqvist, document] }],
       index_ready: true,
       commit_seq: 4,
     });
@@ -70,7 +70,7 @@ test("lbb_query mode=names groups the candidates by name", async () => {
     const cold = payload(
       await client.callTool({
         name: "lbb_query",
-        arguments: { mode: "names", text: "David Korn" },
+        arguments: { mode: "names", text: "Mara Lindqvist" },
       }),
     ) as Notes;
     assert.match(cold.notes?.[0] ?? "", /still building/);

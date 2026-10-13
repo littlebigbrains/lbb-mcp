@@ -735,6 +735,90 @@ test("lbb_evals label judges one result, or the answer of a question as a whole"
   await client.close();
 });
 
+test("lbb_evals label names the route of a question with an answer label", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ trace: { trace_id: "t1" }, labeled: 0 });
+  });
+  const named = await client.callTool({
+    name: "lbb_evals",
+    arguments: {
+      action: "label",
+      trace_id: "t1",
+      valid: true,
+      route: "aggregate",
+    },
+  });
+  assert.notEqual(named.isError, true);
+  assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+    valid: true,
+    route: "aggregate",
+  });
+  // A route goes with an answer label that names the query.
+  for (const args of [
+    { valid: false, route: "lookup" },
+    { item: "e:1", valid: true, route: "lookup" },
+  ]) {
+    const result = await client.callTool({
+      name: "lbb_evals",
+      arguments: { action: "label", trace_id: "t1", ...args },
+    });
+    assert.equal(result.isError, true, JSON.stringify(args));
+  }
+  assert.equal(calls.length, 1);
+  await client.close();
+});
+
+test("lbb_evals run_answers sends the app's answers and results reads its series", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ results: { runner: "my-agent", verdicts: {} } });
+  });
+  const answers = [
+    {
+      golden: "g1",
+      sparql: "ASK { ?s ?p ?o }",
+      route: { kind: "lookup", confidence: 0.75, by: "router" },
+    },
+    { golden: "g2", error: "the model timed out" },
+  ];
+  const ran = await client.callTool({
+    name: "lbb_evals",
+    arguments: {
+      action: "run_answers",
+      runner: "my-agent",
+      consistency: "strong",
+      answers,
+    },
+  });
+  assert.notEqual(ran.isError, true);
+  const listed = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "results", runner: "my-agent" },
+  });
+  assert.notEqual(listed.isError, true);
+  const [run, results] = calls.map((call) => new URL(call.input));
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(run.pathname, "/v1/evals/run/answers");
+  assert.equal(run.searchParams.get("consistency"), "strong");
+  assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+    answers,
+    runner: "my-agent",
+  });
+  assert.equal(results.pathname, "/v1/evals/results");
+  assert.equal(results.searchParams.get("runner"), "my-agent");
+
+  const empty = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "run_answers", answers: [] },
+  });
+  assert.equal(empty.isError, true);
+  assert.equal(calls.length, 2, "a refused call sends no request");
+  await client.close();
+});
+
 test("lbb_evals review_check agrees with the judge or corrects it", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {

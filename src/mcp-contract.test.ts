@@ -136,7 +136,12 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
       properties: Record<string, { enum?: string[] }>;
     }
   ).properties.action.enum;
-  for (const action of ["checks_summary", "checks", "review_check"]) {
+  for (const action of [
+    "checks_summary",
+    "checks",
+    "review_check",
+    "run_answers",
+  ]) {
     assert.ok(evalActions?.includes(action), action);
   }
   assert.match(
@@ -182,7 +187,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "a7065158aef998248b57a074adbb5d85c46faea37334c82ae18399464bb7ed0d",
+    "36efbde8cc4e4b27a3e73aeaf53cba05606b11ff3e24d77e303ae29ad789e1eb",
   );
   await client.close();
 });
