@@ -63,7 +63,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
         properties: Record<string, { enum?: string[] }>;
       }
     ).properties.action?.enum,
-    ["starters", "list", "get", "preview"],
+    ["starters", "list", "get", "preview", "workflows", "queue"],
   );
   // Files: read only, the list and the parsed pages with their boxes.
   assert.equal(byName.lbb_files.annotations?.readOnlyHint, true);
@@ -87,10 +87,15 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "refresh",
     "pause",
     "resume",
+    "define",
+    "run",
   ]);
   for (const field of ["workflow", "owns"])
     assert.equal(workflowManage.properties[field]?.type, "object", field);
-  assert.equal(workflowManage.properties.batch?.type, "integer");
+  for (const field of ["batch", "shards", "window"])
+    assert.equal(workflowManage.properties[field]?.type, "integer", field);
+  for (const field of ["route_by", "trigger"])
+    assert.equal(workflowManage.properties[field]?.type, "string", field);
   assert.equal(byName.lbb_model_choice.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_model_choice_manage.annotations?.readOnlyHint, false);
   assert.equal(
@@ -187,7 +192,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "36efbde8cc4e4b27a3e73aeaf53cba05606b11ff3e24d77e303ae29ad789e1eb",
+    "46054ecdbf9c8ebde7e0d0fa5c3a16778ac45d5ca1d7aede0bbcf913c6f21014",
   );
   await client.close();
 });

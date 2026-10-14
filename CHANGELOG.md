@@ -2,6 +2,18 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- Workflows with triggers (`/v1/workflows/named`): `lbb_workflows` gains
+  `workflows` (every workflow, or one by `name`, with its target type,
+  shards, routing, window, trigger and each shard's inbox) and `queue`
+  (what a workflow's watch has not sent yet, with origins; `after`,
+  `limit`, `trigger`). `lbb_workflows_manage` gains `define` (a workflow
+  of your worker: `shards`, `route_by`, `window`, `trigger`) and `run`;
+  `pause` and `resume` without `starter` name a workflow with triggers.
+  `lbb_workflows_delete` without `starter` deletes one.
+- Require `@littlebigbrain/client` ^0.26.0 (`workflows.named`).
+
 ## 0.13.0 (2026-10-13)
 
 - `lbb_evals` gains `run_answers` (`answers`, `runner`): it checks your own
