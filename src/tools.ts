@@ -880,7 +880,7 @@ export function registerLbbTools(
       .string()
       .optional()
       .describe(
-        "The starter workflow's catalog id from action=starters, e.g. search.embed (embeddings on a class), ontology.fit (fit from text) or workflow (a developer workflow: your worker's workflow gets the instances). get/preview/use/refresh/pause/resume: required.",
+        "The starter workflow's catalog id from action=starters, e.g. search.embed (embeddings on a class), ontology.fit (fit from text) or workflow (a developer workflow: your worker's workflow gets the instances). get/preview/use/refresh: required. pause/resume: omit to name a workflow with triggers.",
       ),
     class: z
       .string()
@@ -981,21 +981,114 @@ export function registerLbbTools(
     }
     return { starter: args.starter, name: args.name };
   };
+  const workflowName = (args: { name?: string }) => {
+    if (!args.name) throw new Error("this action requires name");
+    return args.name;
+  };
+  // A workflow with triggers (`/v1/workflows/named`): your worker's
+  // workflow type, one watch trigger, shards, routing and window.
+  const namedSetup = {
+    shards: z
+      .number()
+      .int()
+      .min(1)
+      .max(16)
+      .optional()
+      .describe(
+        "define: engine identities that receive the messages, 1 to 16 (default 1). A change needs every shard's inbox empty.",
+      ),
+    route_by: z
+      .string()
+      .optional()
+      .describe(
+        "define: a field of the class whose value keeps work in order: the changes of one value go to one shard. Default: the instance.",
+      ),
+    window: z
+      .number()
+      .int()
+      .min(1)
+      .max(128)
+      .optional()
+      .describe(
+        "define: messages the watch keeps queued per shard, 1 to 128 (default 4).",
+      ),
+    trigger: z
+      .string()
+      .optional()
+      .describe(
+        "define: the watch trigger's id (default watch). queue: the trigger whose queue to read.",
+      ),
+  };
+  const namedRequest = (args: {
+    name?: string;
+    class?: string;
+    fields?: string[];
+    workflow?: { workflow_type: string; version: string };
+    owns?: { classes?: string[]; relations?: string[]; properties?: string[] };
+    batch?: number;
+    shards?: number;
+    route_by?: string;
+    window?: number;
+    trigger?: string;
+  }) => {
+    if (!args.name || !args.class || !args.workflow) {
+      throw new Error("define requires name, class and workflow");
+    }
+    return {
+      name: args.name,
+      workflow: args.workflow,
+      triggers: [
+        {
+          ...(args.trigger ? { id: args.trigger } : {}),
+          watch: {
+            class: args.class,
+            ...(args.fields ? { fields: args.fields } : {}),
+          },
+        },
+      ],
+      ...(args.owns ? { owns: args.owns } : {}),
+      ...(args.batch !== undefined ? { batch: args.batch } : {}),
+      ...(args.shards !== undefined ? { shards: args.shards } : {}),
+      ...(args.route_by ? { route_by: args.route_by } : {}),
+      ...(args.window !== undefined ? { window: args.window } : {}),
+    };
+  };
 
   server.registerTool(
     "lbb_workflows",
     {
       description:
-        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox; name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; page with after and limit. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
       inputSchema: {
-        action: z.enum(["starters", "list", "get", "preview"]),
+        action: z.enum([
+          "starters",
+          "list",
+          "get",
+          "preview",
+          "workflows",
+          "queue",
+        ]),
         name: z
           .string()
           .optional()
           .describe(
-            "get: the triggered workflow's name. preview: the name a new workflow would get.",
+            "get: the triggered workflow's name. preview: the name a new workflow would get. workflows: one workflow's name (omit for all). queue: required.",
           ),
         ...workflowSetup,
+        trigger: namedSetup.trigger,
+        after: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("queue: the position to start from (next_after)."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("queue: items per page, 1 to 100 (default 50)."),
         sample: z
           .number()
           .int()
@@ -1028,6 +1121,16 @@ export function registerLbbTools(
               ...(args.sample ? { sample: args.sample } : {}),
               ...(args.iris ? { iris: args.iris } : {}),
             });
+          case "workflows":
+            return args.name
+              ? workflows.named.get(args.name)
+              : workflows.named.list();
+          case "queue":
+            return workflows.named.queue(workflowName(args), {
+              ...(args.trigger ? { trigger: args.trigger } : {}),
+              ...(args.after !== undefined ? { after: args.after } : {}),
+              ...(args.limit !== undefined ? { limit: args.limit } : {}),
+            });
         }
       }),
   );
@@ -1036,9 +1139,9 @@ export function registerLbbTools(
     "lbb_workflows_manage",
     {
       description:
-        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending; resume lets it catch up. search.embed and ontology.fit cannot be paused.",
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, class and fields (its watch trigger), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again.",
       inputSchema: {
-        action: z.enum(["use", "refresh", "pause", "resume"]),
+        action: z.enum(["use", "refresh", "pause", "resume", "define", "run"]),
         name: z
           .string()
           .optional()
@@ -1061,6 +1164,7 @@ export function registerLbbTools(
           .describe(
             "use: a monthly model budget in USD for this workflow, below the stack's own.",
           ),
+        ...namedSetup,
         detail: detailSchema,
         ...graphScope,
       },
@@ -1075,9 +1179,17 @@ export function registerLbbTools(
           case "refresh":
             return workflows.triggered.refresh(workflowRef(args));
           case "pause":
-            return workflows.triggered.pause(workflowRef(args), true);
+            return args.starter
+              ? workflows.triggered.pause(workflowRef(args), true)
+              : workflows.named.pause(workflowName(args), true);
           case "resume":
-            return workflows.triggered.pause(workflowRef(args), false);
+            return args.starter
+              ? workflows.triggered.pause(workflowRef(args), false)
+              : workflows.named.pause(workflowName(args), false);
+          case "define":
+            return workflows.named.put(namedRequest(args));
+          case "run":
+            return workflows.named.run(workflowName(args));
         }
       }),
   );
@@ -1086,11 +1198,14 @@ export function registerLbbTools(
     "lbb_workflows_delete",
     {
       description:
-        "Delete a triggered workflow: it stops following its class, and what it wrote stays. Deleting search.embed deletes the embedding and its vectors, so its class stops being searchable; the suggestions an ontology.fit filed stay; a developer workflow leaves its workflow instance and the facts its code wrote. Ask the user first; confirm must repeat the name.",
+        "Delete a triggered workflow: it stops following its class, and what it wrote stays. Deleting search.embed deletes the embedding and its vectors, so its class stops being searchable; the suggestions an ontology.fit filed stay; a developer workflow leaves its workflow instance and the facts its code wrote. Without starter it deletes a workflow with triggers by its name, and its shards stay. Ask the user first; confirm must repeat the name.",
       inputSchema: {
         starter: z
           .string()
-          .describe("The starter workflow's catalog id, e.g. search.embed."),
+          .optional()
+          .describe(
+            "The starter workflow's catalog id, e.g. search.embed. Omit for a workflow with triggers.",
+          ),
         name: z.string().describe("The triggered workflow's name."),
         confirm: z.string().describe("The same name again, to confirm."),
         detail: detailSchema,
@@ -1103,10 +1218,10 @@ export function registerLbbTools(
         if (confirm !== name) {
           throw new Error("confirm must repeat the workflow name");
         }
-        return scoped(client, graph).workflows.triggered.delete({
-          starter,
-          name,
-        });
+        const workflows = scoped(client, graph).workflows;
+        return starter
+          ? workflows.triggered.delete({ starter, name })
+          : workflows.named.delete(name);
       }),
   );
 
