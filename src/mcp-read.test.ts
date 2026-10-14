@@ -1750,6 +1750,122 @@ test("workflow tools route to the starter and triggered workflow API", async () 
   }
 });
 
+test("a workflow with triggers is defined, read with its queue, run, paused and deleted by name", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ name: "notes" });
+  });
+  const last = () => {
+    const call = calls.at(-1);
+    return {
+      method: call?.init.method ?? "GET",
+      url: call?.input ?? "",
+      body: JSON.parse(call?.init.body ?? "{}") as Record<string, unknown>,
+    };
+  };
+  try {
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "notes",
+        class: "Note",
+        fields: ["body"],
+        workflow: { workflow_type: "word-count", version: "v1" },
+        owns: { properties: ["word_count"] },
+        shards: 4,
+        route_by: "author",
+        window: 8,
+        trigger: "notes",
+        graph: "crm",
+      },
+    });
+    assert.equal(last().method, "PUT");
+    assert.match(last().url, /\/v1\/workflows\/named\?graph=crm$/);
+    assert.deepEqual(last().body, {
+      name: "notes",
+      workflow: { workflow_type: "word-count", version: "v1" },
+      triggers: [{ id: "notes", watch: { class: "Note", fields: ["body"] } }],
+      owns: { properties: ["word_count"] },
+      shards: 4,
+      route_by: "author",
+      window: 8,
+    });
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "workflows" },
+    });
+    assert.match(last().url, /\/v1\/workflows\/named\?/);
+    assert.doesNotMatch(last().url, /name=/);
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "workflows", name: "notes" },
+    });
+    assert.match(last().url, /\/v1\/workflows\/named\?.*name=notes$/);
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "queue", name: "notes", after: 50, limit: 10 },
+    });
+    assert.equal(last().method, "GET");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\/queue\?.*name=notes&after=50&limit=10$/,
+    );
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "run", name: "notes" },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/workflows\/named\/run\?.*name=notes$/);
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: { action: "pause", name: "notes" },
+    });
+    assert.match(last().url, /\/v1\/workflows\/named\/pause\?.*name=notes$/);
+    assert.deepEqual(last().body, { paused: true });
+    await client.callTool({
+      name: "lbb_workflows_delete",
+      arguments: { name: "notes", confirm: "notes" },
+    });
+    assert.equal(last().method, "DELETE");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\?.*name=notes&confirm=notes$/,
+    );
+
+    const before = calls.length;
+    const noQueueName = await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "queue" },
+    });
+    assert.equal(noQueueName.isError, true);
+    const noClass = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "notes",
+        workflow: { workflow_type: "word-count", version: "v1" },
+      },
+    });
+    assert.equal(noClass.isError, true);
+    const manyShards = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "notes",
+        class: "Note",
+        workflow: { workflow_type: "word-count", version: "v1" },
+        shards: 17,
+      },
+    });
+    assert.equal(manyShards.isError, true);
+    assert.equal(calls.length, before, "no request for an incomplete call");
+  } finally {
+    await client.close();
+  }
+});
+
 test("a developer workflow is created with its workflow, owned outputs and batch, and pauses and resumes", async () => {
   const calls: Call[] = [];
   const client = await connect(async (input, init) => {
