@@ -10,6 +10,8 @@ import {
   toolResult,
 } from "./tool-runtime.js";
 
+/** Files one `list` call returns: one page, newest upload first. */
+export const FILES_PER_LIST = 50;
 /** Lines one `pages` call returns by default, and at most. */
 export const FILE_LINES_DEFAULT = 200;
 export const FILE_LINES_MAX = 1_000;
@@ -130,9 +132,13 @@ export function registerFilesTool(server: McpServer, client: LbbClient): void {
     "lbb_files",
     {
       description:
-        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity); the documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows the files with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count). pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
+        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity); the documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows 50 files a call, newest upload first, with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count); when more follow, next names the after of the next call. pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
       inputSchema: {
         action: z.enum(["list", "pages"]),
+        after: z
+          .string()
+          .optional()
+          .describe("list: the next 50 files, from a previous call's next."),
         sha256: z
           .string()
           .optional()
@@ -188,10 +194,24 @@ export function registerFilesTool(server: McpServer, client: LbbClient): void {
     async (args) => {
       const target = scoped(client, args.graph);
       if (args.action === "list") {
-        return run(client, "lbb_files.list", args.detail, async () => {
-          const { files } = await target.files.list();
-          return { files };
-        });
+        let next: string | undefined;
+        return run(
+          client,
+          "lbb_files.list",
+          args.detail,
+          async () => {
+            const page = await target.files.list({
+              limit: FILES_PER_LIST,
+              ...(args.after ? { after: args.after } : {}),
+            });
+            next = page.next ?? undefined;
+            return { files: page.files };
+          },
+          () =>
+            next
+              ? { truncated: true, next: { action: "list", after: next } }
+              : {},
+        );
       }
       try {
         const file = await fileSha(target, args);
