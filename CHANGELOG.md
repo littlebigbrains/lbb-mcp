@@ -2,6 +2,22 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.15.0 (2026-10-16)
+
+- `lbb_files` `list` returns 50 files a call, the newest upload first; when
+  more follow, `next` names the `after` of the next call (the new `after`
+  input). This release needs a server that pages `GET /v1/files`.
+- `lbb_files` `list` takes the filters `parse_status` and `name`.
+  `parse_status` is `parsed`, `waiting`, `unsupported` or `failed`. `name` is
+  a part of the file name, in any case. A filtered list reads the published
+  generation and returns its commit as `as_of_commit_seq`. A file uploaded a
+  moment ago can be missing from it until publication. Its `next` repeats the
+  filters, because the server binds the cursor to them.
+- `lbb_files` `pages` by `name` finds a file of any age. It looks the name up
+  with the list's `name` filter. When that list has no exact match, it reads
+  the newest 50 files. They hold a file uploaded since the publication.
+- Require `@littlebigbrain/client` ^0.27.0 (the `files.list` filters).
+
 ## 0.14.0 (2026-10-14)
 
 - Workflows with triggers (`/v1/workflows/named`): `lbb_workflows` gains

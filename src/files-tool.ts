@@ -10,6 +10,20 @@ import {
   toolResult,
 } from "./tool-runtime.js";
 
+/** Files one `list` call returns: one page, newest upload first. */
+export const FILES_PER_LIST = 50;
+/**
+ * Files `pages` reads to find a name: one page of the list filtered by the
+ * name, the most one page holds.
+ */
+export const FILES_PER_NAME_LOOKUP = 1_000;
+/** The parse statuses `list` filters by; `waiting` is a file without one. */
+export const FILE_PARSE_STATUSES = [
+  "parsed",
+  "waiting",
+  "unsupported",
+  "failed",
+] as const;
 /** Lines one `pages` call returns by default, and at most. */
 export const FILE_LINES_DEFAULT = 200;
 export const FILE_LINES_MAX = 1_000;
@@ -100,7 +114,21 @@ export function pageLines(
 
 const SHA256 = /^[0-9a-fA-F]{64}$/;
 
-/** The SHA-256 of the file a call names, by `sha256` or by its exact name. */
+/** The files of `files` named `name` exactly (both composed, NFC). */
+function namedExactly(
+  files: Schemas["FileRecord"][],
+  name: string,
+): Schemas["FileRecord"][] {
+  const wanted = name.normalize("NFC");
+  return files.filter((file) => file.name.normalize("NFC") === wanted);
+}
+
+/**
+ * The SHA-256 of the file a call names, by `sha256` or by its exact name.
+ * A name is looked up in the list filtered by it, which finds a file of any
+ * age; that list reads the published generation, so a file uploaded since
+ * is looked up in the newest files of the plain list.
+ */
 async function fileSha(
   target: LbbClient,
   args: { sha256?: string; name?: string },
@@ -111,8 +139,16 @@ async function fileSha(
     return { sha256: args.sha256.trim().toLowerCase() };
   }
   if (!args.name) throw new Error("pages needs sha256 or name");
-  const { files } = await target.files.list();
-  const named = files.filter((file) => file.name === args.name);
+  const filtered = await target.files.list({
+    name: args.name,
+    limit: FILES_PER_NAME_LOOKUP,
+  });
+  let files = filtered.files;
+  let named = namedExactly(files, args.name);
+  if (named.length === 0) {
+    ({ files } = await target.files.list({ limit: FILES_PER_LIST }));
+    named = namedExactly(files, args.name);
+  }
   if (named.length === 1)
     return { sha256: named[0].sha256, name: named[0].name };
   if (named.length > 1)
@@ -130,9 +166,21 @@ export function registerFilesTool(server: McpServer, client: LbbClient): void {
     "lbb_files",
     {
       description:
-        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity); the documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows the files with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count). pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
+        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity); the documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows 50 files a call, newest upload first, with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count); when more follow, next names the after of the next call (with the same filters). parse_status keeps the files of one parse status; waiting is a file not parsed yet. name keeps the files whose name holds a text, in any case. A filtered list reads the Documents of the published generation and names its commit (as_of_commit_seq). A file uploaded, renamed or parsed a moment ago can be missing from it until publication. pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
       inputSchema: {
         action: z.enum(["list", "pages"]),
+        after: z
+          .string()
+          .optional()
+          .describe(
+            "list: the next 50 files, from a previous call's next (pass the same parse_status and name).",
+          ),
+        parse_status: z
+          .enum(FILE_PARSE_STATUSES)
+          .optional()
+          .describe(
+            "list: only the files of this parse status; waiting is a file not parsed yet.",
+          ),
         sha256: z
           .string()
           .optional()
@@ -141,7 +189,7 @@ export function registerFilesTool(server: McpServer, client: LbbClient): void {
           .string()
           .optional()
           .describe(
-            "pages: the file's exact name, when you do not have its sha256.",
+            "list: only the files whose name holds this text, in any case. pages: the file's exact name, when you do not have its sha256.",
           ),
         from: z
           .number()
@@ -188,10 +236,39 @@ export function registerFilesTool(server: McpServer, client: LbbClient): void {
     async (args) => {
       const target = scoped(client, args.graph);
       if (args.action === "list") {
-        return run(client, "lbb_files.list", args.detail, async () => {
-          const { files } = await target.files.list();
-          return { files };
-        });
+        // The server binds a cursor to its filters: the next call repeats them.
+        const filters = {
+          ...(args.parse_status ? { parse_status: args.parse_status } : {}),
+          ...(args.name ? { name: args.name } : {}),
+        };
+        let next: string | undefined;
+        return run(
+          client,
+          "lbb_files.list",
+          args.detail,
+          async () => {
+            const page = await target.files.list({
+              limit: FILES_PER_LIST,
+              ...(args.after ? { after: args.after } : {}),
+              ...(args.parse_status ? { parseStatus: args.parse_status } : {}),
+              ...(args.name ? { name: args.name } : {}),
+            });
+            next = page.next ?? undefined;
+            return {
+              files: page.files,
+              ...(page.as_of_commit_seq != null
+                ? { as_of_commit_seq: page.as_of_commit_seq }
+                : {}),
+            };
+          },
+          () =>
+            next
+              ? {
+                  truncated: true,
+                  next: { action: "list", ...filters, after: next },
+                }
+              : {},
+        );
       }
       try {
         const file = await fileSha(target, args);
