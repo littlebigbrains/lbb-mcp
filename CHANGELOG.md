@@ -2,6 +2,10 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.15.1 (2026-10-17)
+
+- Require `@littlebigbrain/client` ^0.28.0.
+
 ## 0.15.0 (2026-10-16)
 
 - `lbb_files` `list` returns 50 files a call, the newest upload first; when
