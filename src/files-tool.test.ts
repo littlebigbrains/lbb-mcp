@@ -112,7 +112,8 @@ test("lbb_files lists the files and reads a page by sha256 or by name", async ()
         to: 2,
         pages: [page(1, ["S 1.1 Washbasin", "W 60 cm"])],
       });
-    return ok(FILES);
+    // The first page names the next one; the page after it is the last.
+    return ok(input.includes("after=c1") ? FILES : { ...FILES, next: "c1" });
   };
   const client = await connect(fetch);
   try {
@@ -126,7 +127,22 @@ test("lbb_files lists the files and reads a page by sha256 or by name", async ()
       (listed.data as { files: Array<{ name: string }> }).files[1].name,
       "equipment.pdf",
     );
-    assert.match(calls.at(-1)?.input ?? "", /\/v1\/files\?graph=docs$/);
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=docs&limit=50$/,
+    );
+    assert.deepEqual(listed.next, { action: "list", after: "c1" });
+    const second = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: { action: "list", graph: "docs", after: "c1" },
+      }),
+    );
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=docs&limit=50&after=c1$/,
+    );
+    assert.equal(second.next, undefined);
 
     const bySha = payload(
       await client.callTool({
@@ -161,7 +177,15 @@ test("lbb_files lists the files and reads a page by sha256 or by name", async ()
         },
       }),
     );
-    assert.equal(calls.length, before + 2, "a name reads the list first");
+    assert.equal(
+      calls.length,
+      before + 2,
+      "a name reads the list filtered by it first",
+    );
+    assert.match(
+      calls[before].input,
+      /\/v1\/files\?graph=g&limit=1000&name=room-book\.pdf$/,
+    );
     assert.match(byName.summary, /^room-book\.pdf, page 1 of 3/);
     assert.deepEqual(byName.next, {
       action: "pages",
@@ -204,6 +228,174 @@ test("lbb_files refuses a call that names no file it can read", async () => {
       arguments: { action: "pages", name: "missing.pdf" },
     });
     assert.match(JSON.stringify(missing.content), /room-book\.pdf/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_files filters the list and its next repeats the filters", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    const failed = { files: [FILES.files[0]], as_of_commit_seq: 42 };
+    return ok(input.includes("after=") ? failed : { ...failed, next: "m1" });
+  });
+  try {
+    const listed = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: {
+          action: "list",
+          parse_status: "failed",
+          name: "Room Book",
+          detail: "full",
+        },
+      }),
+    );
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=g&limit=50&parse_status=failed&name=Room%20Book$/,
+    );
+    const data = listed.data as {
+      files: Array<{ name: string }>;
+      as_of_commit_seq: number;
+    };
+    assert.equal(data.files[0].name, "room-book.pdf");
+    assert.equal(data.as_of_commit_seq, 42);
+    // The server binds the cursor to the filters: next names them again.
+    assert.deepEqual(listed.next, {
+      action: "list",
+      parse_status: "failed",
+      name: "Room Book",
+      after: "m1",
+    });
+    const second = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: listed.next as Record<string, unknown>,
+      }),
+    );
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=g&limit=50&after=m1&parse_status=failed&name=Room%20Book$/,
+    );
+    assert.equal(second.next, undefined);
+
+    // The plain list names no commit; a status the server has no name for
+    // is refused before a call.
+    const before = calls.length;
+    const refused = await client.callTool({
+      name: "lbb_files",
+      arguments: { action: "list", parse_status: "done" },
+    });
+    assert.equal(refused.isError, true);
+    assert.equal(calls.length, before);
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_files pages finds a file by name beyond the newest files", async () => {
+  const calls: Call[] = [];
+  const older = {
+    ...FILES.files[0],
+    sha256: OTHER,
+    name: "room-book-2019.pdf",
+  };
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    if (input.includes("/v1/files/pages"))
+      return ok({
+        sha256: OTHER,
+        parser: "poppler-26.03.0",
+        page_count: 1,
+        from: 0,
+        to: 1,
+        pages: [page(0, ["S 1.1 Washbasin"])],
+      });
+    // The filter finds the older file, and a name that holds it.
+    if (input.includes("name="))
+      return ok({
+        files: [{ ...older, name: "room-book-2019.pdf.bak" }, older],
+        as_of_commit_seq: 7,
+      });
+    return ok(FILES);
+  });
+  try {
+    const found = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: { action: "pages", name: "room-book-2019.pdf" },
+      }),
+    );
+    assert.match(found.summary, /^room-book-2019\.pdf, page 0 of 1/);
+    assert.deepEqual(
+      calls.map((call) => call.input.replace(/^http:\/\/h/, "")),
+      [
+        "/v1/files?graph=g&limit=1000&name=room-book-2019.pdf",
+        `/v1/files/pages?graph=g&sha256=${OTHER}&from=0&to=1`,
+      ],
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_files pages finds a new upload the published generation lacks", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    if (input.includes("/v1/files/pages"))
+      return ok({
+        sha256: SHA,
+        parser: "poppler-26.03.0",
+        page_count: 3,
+        from: 0,
+        to: 1,
+        pages: [page(0, ["S 1.1 Washbasin"])],
+      });
+    // The filtered list reads the published generation: it lacks the file.
+    if (input.includes("name=")) return ok({ files: [], as_of_commit_seq: 3 });
+    return ok(FILES);
+  });
+  try {
+    const found = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: { action: "pages", name: "room-book.pdf" },
+      }),
+    );
+    assert.match(found.summary, /^room-book\.pdf, page 0 of 3/);
+    assert.deepEqual(
+      calls.map((call) => call.input.replace(/^http:\/\/h/, "")),
+      [
+        "/v1/files?graph=g&limit=1000&name=room-book.pdf",
+        "/v1/files?graph=g&limit=50",
+        `/v1/files/pages?graph=g&sha256=${SHA}&from=0&to=1`,
+      ],
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test("lbb_files pages refuses a name that several files have", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    const twin = { ...FILES.files[1], name: "room-book.pdf" };
+    return ok({ files: [FILES.files[0], twin], as_of_commit_seq: 3 });
+  });
+  try {
+    const result = await client.callTool({
+      name: "lbb_files",
+      arguments: { action: "pages", name: "room-book.pdf" },
+    });
+    assert.equal(result.isError, true);
+    const text = JSON.stringify(result.content);
+    assert.match(text, /several files are named room-book\.pdf/);
+    assert.match(text, new RegExp(`${SHA}, ${OTHER}`));
+    assert.equal(calls.length, 1, "the filtered list found both");
   } finally {
     await client.close();
   }

@@ -158,7 +158,7 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_workflows` | List the starter workflows this server offers and the workflows created from them on a graph (triggered workflows), read one with its status, and preview a new one. Read the workflows with triggers (target type, shards, routing, window, trigger) and what each watch has not sent yet, with origins. |
 | `lbb_workflows_manage` | Create a workflow from a starter workflow on a class (a developer workflow with its workflow type, owned outputs and batch), ask it to run now, or pause and resume a developer workflow. Define a workflow with triggers of your worker (shards, routing field, window) and run it now. |
 | `lbb_workflows_delete` | Delete a triggered workflow, or a workflow with triggers by its name. What it wrote stays. |
-| `lbb_files` | List the files of a graph, and read the parsed pages of one: each line with its id, its box on the page and its text. |
+| `lbb_files` | List the files of a graph, all or by parse status or a part of the name, and read the parsed pages of one: each line with its id, its box on the page and its text. |
 | `lbb_commit` | Write or retract JSON facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), publish validation rules, or keep the graph's notes and worked examples for questions in plain words (`get_rewrite_profile`, `set_rewrite_profile`). |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. Read the model checks of a graph, and agree with or correct a check that the user confirmed. |

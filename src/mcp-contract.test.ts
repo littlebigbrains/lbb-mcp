@@ -75,6 +75,15 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     ).properties.action?.enum,
     ["list", "pages"],
   );
+  // The list filters: a parse status (waiting: none yet) and a part of the name.
+  assert.deepEqual(
+    (
+      byName.lbb_files.inputSchema as {
+        properties: Record<string, { enum?: string[] }>;
+      }
+    ).properties.parse_status?.enum,
+    ["parsed", "waiting", "unsupported", "failed"],
+  );
   assert.equal(byName.lbb_workflows_manage.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_workflows_manage.annotations?.destructiveHint, false);
   assert.equal(byName.lbb_workflows_delete.annotations?.destructiveHint, true);
@@ -192,7 +201,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "46054ecdbf9c8ebde7e0d0fa5c3a16778ac45d5ca1d7aede0bbcf913c6f21014",
+    "86f4a34186e1258c3d10e86d6ebe940b33bb13d06d7bf68e614fb06a7dd59314",
   );
   await client.close();
 });
