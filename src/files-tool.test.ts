@@ -112,7 +112,8 @@ test("lbb_files lists the files and reads a page by sha256 or by name", async ()
         to: 2,
         pages: [page(1, ["S 1.1 Washbasin", "W 60 cm"])],
       });
-    return ok(FILES);
+    // The first page names the next one; the page after it is the last.
+    return ok(input.includes("after=c1") ? FILES : { ...FILES, next: "c1" });
   };
   const client = await connect(fetch);
   try {
@@ -126,7 +127,22 @@ test("lbb_files lists the files and reads a page by sha256 or by name", async ()
       (listed.data as { files: Array<{ name: string }> }).files[1].name,
       "equipment.pdf",
     );
-    assert.match(calls.at(-1)?.input ?? "", /\/v1\/files\?graph=docs$/);
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=docs&limit=50$/,
+    );
+    assert.deepEqual(listed.next, { action: "list", after: "c1" });
+    const second = payload(
+      await client.callTool({
+        name: "lbb_files",
+        arguments: { action: "list", graph: "docs", after: "c1" },
+      }),
+    );
+    assert.match(
+      calls.at(-1)?.input ?? "",
+      /\/v1\/files\?graph=docs&limit=50&after=c1$/,
+    );
+    assert.equal(second.next, undefined);
 
     const bySha = payload(
       await client.callTool({

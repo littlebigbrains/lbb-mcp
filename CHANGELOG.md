@@ -2,6 +2,12 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_files` `list` returns 50 files a call, the newest upload first; when
+  more follow, `next` names the `after` of the next call (the new `after`
+  input). This release needs a server that pages `GET /v1/files`.
+
 ## 0.14.0 (2026-10-14)
 
 - Workflows with triggers (`/v1/workflows/named`): `lbb_workflows` gains
