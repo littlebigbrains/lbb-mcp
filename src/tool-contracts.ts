@@ -320,6 +320,12 @@ export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
         .boolean()
         .optional()
         .describe("Advisory required flag (not enforced on commit)"),
+      unit: z
+        .string()
+        .optional()
+        .describe(
+          "Unit of an i64 or f64 field, e.g. mm, cm, kg, m2 or h. Writers that read text, such as values.extract, convert numbers to it",
+        ),
     })
     .strict(),
   z
