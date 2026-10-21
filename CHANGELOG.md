@@ -4,6 +4,7 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## Unreleased
 
+- Requires `@littlebigbrain/client` `^0.29.0`.
 - `lbb_workflows_manage` `define` takes `budget_usd_per_month` (the
   workflow's own monthly model budget), `on_exhausted` (`block` or `skip`)
   and `fan_in` (the id of the workflow's fan-in identity).
