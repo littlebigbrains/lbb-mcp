@@ -103,8 +103,9 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     assert.equal(workflowManage.properties[field]?.type, "object", field);
   for (const field of ["batch", "shards", "window"])
     assert.equal(workflowManage.properties[field]?.type, "integer", field);
-  for (const field of ["route_by", "trigger"])
+  for (const field of ["route_by", "trigger", "fan_in", "on_exhausted"])
     assert.equal(workflowManage.properties[field]?.type, "string", field);
+  assert.equal(workflowManage.properties.budget_usd_per_month?.type, "number");
   assert.equal(byName.lbb_model_choice.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_model_choice_manage.annotations?.readOnlyHint, false);
   assert.equal(
@@ -201,7 +202,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "e875c52d17edea90e06bb11530d0d984244ba0a3c12e7989bfb4c72950204e7e",
+    "5b34d8129837c4dc3bd34686b43ddf18bbaae667de33c156a59bdba0ee6146fb",
   );
   await client.close();
 });

@@ -1018,6 +1018,18 @@ export function registerLbbTools(
       .describe(
         "define: the watch trigger's id (default watch). queue: the trigger whose queue to read.",
       ),
+    on_exhausted: z
+      .enum(["block", "skip"])
+      .optional()
+      .describe(
+        "define: what a turn that failed for good does to its shard: block (the default) holds the inbox until a person retries or skips it; skip keeps the failed turn in the history and goes on.",
+      ),
+    fan_in: z
+      .string()
+      .optional()
+      .describe(
+        "define: the id of the workflow's fan-in identity (starter.<name>.<fan_in>) that the shards' turns send to, for example a catalogue. Default: none.",
+      ),
   };
   const namedRequest = (args: {
     name?: string;
@@ -1030,6 +1042,9 @@ export function registerLbbTools(
     route_by?: string;
     window?: number;
     trigger?: string;
+    budget_usd_per_month?: number;
+    on_exhausted?: "block" | "skip";
+    fan_in?: string;
   }) => {
     if (!args.name || !args.class || !args.workflow) {
       throw new Error("define requires name, class and workflow");
@@ -1051,6 +1066,11 @@ export function registerLbbTools(
       ...(args.shards !== undefined ? { shards: args.shards } : {}),
       ...(args.route_by ? { route_by: args.route_by } : {}),
       ...(args.window !== undefined ? { window: args.window } : {}),
+      ...(args.budget_usd_per_month !== undefined
+        ? { budget_usd_per_month: args.budget_usd_per_month }
+        : {}),
+      ...(args.on_exhausted ? { on_exhausted: args.on_exhausted } : {}),
+      ...(args.fan_in ? { fan_in: args.fan_in } : {}),
     };
   };
 
@@ -1139,7 +1159,7 @@ export function registerLbbTools(
     "lbb_workflows_manage",
     {
       description:
-        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, class and fields (its watch trigger), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again.",
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, class and fields (its watch trigger), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again.",
       inputSchema: {
         action: z.enum(["use", "refresh", "pause", "resume", "define", "run"]),
         name: z
@@ -1162,7 +1182,7 @@ export function registerLbbTools(
           .nonnegative()
           .optional()
           .describe(
-            "use: a monthly model budget in USD for this workflow, below the stack's own.",
+            "use and define: a monthly model budget in USD for this workflow, below the stack's own. For define, its turns' activity calls stop at it (429 workflow_budget_exceeded) and the turn waits until the next month.",
           ),
         ...namedSetup,
         detail: detailSchema,
