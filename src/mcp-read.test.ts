@@ -1778,6 +1778,9 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
         route_by: "author",
         window: 8,
         trigger: "notes",
+        budget_usd_per_month: 5,
+        on_exhausted: "skip",
+        fan_in: "catalogue",
         graph: "crm",
       },
     });
@@ -1791,6 +1794,9 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
       shards: 4,
       route_by: "author",
       window: 8,
+      budget_usd_per_month: 5,
+      on_exhausted: "skip",
+      fan_in: "catalogue",
     });
     await client.callTool({
       name: "lbb_workflows",
