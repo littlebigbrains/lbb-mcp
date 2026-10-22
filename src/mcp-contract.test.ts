@@ -24,6 +24,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_embeddings_delete",
     "lbb_embeddings_manage",
     "lbb_evals",
+    "lbb_evals_delete",
     "lbb_files",
     "lbb_fit_sources",
     "lbb_fit_sources_delete",
@@ -34,6 +35,8 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_models",
     "lbb_query",
     "lbb_rdf",
+    "lbb_reviews",
+    "lbb_reviews_manage",
     "lbb_workflows",
     "lbb_workflows_delete",
     "lbb_workflows_manage",
@@ -63,7 +66,16 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
         properties: Record<string, { enum?: string[] }>;
       }
     ).properties.action?.enum,
-    ["starters", "list", "get", "preview", "workflows", "queue"],
+    [
+      "starters",
+      "list",
+      "get",
+      "preview",
+      "workflows",
+      "queue",
+      "tests",
+      "tests_get",
+    ],
   );
   // Files: read only, the list and the parsed pages with their boxes.
   assert.equal(byName.lbb_files.annotations?.readOnlyHint, true);
@@ -98,6 +110,9 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "resume",
     "define",
     "run",
+    "tests_create",
+    "tests_answer",
+    "tests_cancel",
   ]);
   for (const field of ["workflow", "owns"])
     assert.equal(workflowManage.properties[field]?.type, "object", field);
@@ -115,6 +130,29 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   assert.match(
     byName.lbb_model_choice_manage.description ?? "",
     /switch only what the user confirmed/,
+  );
+  // Reviews: read only, and the writes that answer them.
+  assert.equal(byName.lbb_reviews.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_reviews_manage.annotations?.readOnlyHint, false);
+  // Accepting an item commits facts or applies an ontology change.
+  assert.equal(byName.lbb_reviews_manage.annotations?.destructiveHint, true);
+  const actionsOf = (name: string) =>
+    (
+      byName[name].inputSchema as {
+        properties: Record<string, { enum?: string[] }>;
+      }
+    ).properties.action?.enum;
+  assert.deepEqual(actionsOf("lbb_reviews"), ["list", "get", "patterns"]);
+  assert.deepEqual(actionsOf("lbb_reviews_manage"), [
+    "create",
+    "answer",
+    "answer_batch",
+    "comment",
+    "withdraw",
+  ]);
+  assert.match(
+    byName.lbb_reviews_manage.description ?? "",
+    /answer only what the user decided/,
   );
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
@@ -156,12 +194,25 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "checks",
     "review_check",
     "run_answers",
+    "datasets",
+    "datasets_get",
+    "datasets_export",
+    "datasets_create",
+    "datasets_items",
   ]) {
     assert.ok(evalActions?.includes(action), action);
   }
   assert.match(
     byName.lbb_evals.description ?? "",
     /review only what the user confirmed/,
+  );
+  // A dataset is deleted with lbb_evals_delete, which asks the person.
+  assert.ok(!evalActions?.includes("datasets_delete"));
+  assert.match(byName.lbb_evals.description ?? "", /lbb_evals_delete/);
+  assert.equal(byName.lbb_evals_delete.annotations?.destructiveHint, true);
+  assert.deepEqual(
+    (byName.lbb_evals_delete.inputSchema as { required?: string[] }).required,
+    ["id"],
   );
   await client.close();
 });
@@ -202,7 +253,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "5b34d8129837c4dc3bd34686b43ddf18bbaae667de33c156a59bdba0ee6146fb",
+    "b14340109279b1d896807fed0594107fd4cf5fefb7d1f125894e6fe8dada166b",
   );
   await client.close();
 });

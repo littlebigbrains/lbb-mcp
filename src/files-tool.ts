@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolHost } from "./approval.js";
 import type { LbbClient, Schemas } from "@littlebigbrain/client";
 import { z } from "zod";
 import { READ_ONLY, detailSchema, graphScope } from "./tool-contracts.js";
@@ -161,8 +161,8 @@ async function fileSha(
   );
 }
 
-export function registerFilesTool(server: McpServer, client: LbbClient): void {
-  server.registerTool(
+export function registerFilesTool(host: ToolHost, client: LbbClient): void {
+  host.register(
     "lbb_files",
     {
       description:
