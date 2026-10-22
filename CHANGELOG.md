@@ -4,9 +4,14 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## Unreleased
 
+- Requires `@littlebigbrain/client` `^0.29.0`.
 - `lbb_workflows_manage` `define` takes `budget_usd_per_month` (the
   workflow's own monthly model budget), `on_exhausted` (`block` or `skip`)
   and `fan_in` (the id of the workflow's fan-in identity).
+- `lbb_workflows` `queue` pages with `cursor`, the string `next_cursor` of
+  the page before, in place of the number `after`. The answer lists the
+  items in `data`, with `has_more` and `next_cursor`; `workflows` answers
+  one page of the workflows in `data` and takes `cursor` and `limit` too.
 
 ## 0.15.1 (2026-10-17)
 

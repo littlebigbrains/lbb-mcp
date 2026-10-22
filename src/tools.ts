@@ -1078,7 +1078,7 @@ export function registerLbbTools(
     "lbb_workflows",
     {
       description:
-        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox; name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; page with after and limit. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox, one page in data (has_more and next_cursor page them with cursor and limit); name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; the items are in data, and has_more and next_cursor page them with cursor and limit. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
       inputSchema: {
         action: z.enum([
           "starters",
@@ -1096,19 +1096,19 @@ export function registerLbbTools(
           ),
         ...workflowSetup,
         trigger: namedSetup.trigger,
-        after: z
-          .number()
-          .int()
-          .nonnegative()
+        cursor: z
+          .string()
           .optional()
-          .describe("queue: the position to start from (next_after)."),
+          .describe("queue and workflows: the next_cursor of the page before."),
         limit: z
           .number()
           .int()
           .min(1)
           .max(100)
           .optional()
-          .describe("queue: items per page, 1 to 100 (default 50)."),
+          .describe(
+            "queue: items per page, 1 to 100 (default 50). workflows: workflows per page, 1 to 100 (the server's default 100).",
+          ),
         sample: z
           .number()
           .int()
@@ -1144,11 +1144,14 @@ export function registerLbbTools(
           case "workflows":
             return args.name
               ? workflows.named.get(args.name)
-              : workflows.named.list();
+              : workflows.named.list({
+                  ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+                  ...(args.limit !== undefined ? { limit: args.limit } : {}),
+                });
           case "queue":
             return workflows.named.queue(workflowName(args), {
               ...(args.trigger ? { trigger: args.trigger } : {}),
-              ...(args.after !== undefined ? { after: args.after } : {}),
+              ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
               ...(args.limit !== undefined ? { limit: args.limit } : {}),
             });
         }

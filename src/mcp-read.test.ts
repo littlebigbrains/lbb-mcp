@@ -1806,17 +1806,25 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
     assert.doesNotMatch(last().url, /name=/);
     await client.callTool({
       name: "lbb_workflows",
+      arguments: { action: "workflows", cursor: "notes", limit: 20 },
+    });
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\?.*limit=20&cursor=notes$/,
+    );
+    await client.callTool({
+      name: "lbb_workflows",
       arguments: { action: "workflows", name: "notes" },
     });
     assert.match(last().url, /\/v1\/workflows\/named\?.*name=notes$/);
     await client.callTool({
       name: "lbb_workflows",
-      arguments: { action: "queue", name: "notes", after: 50, limit: 10 },
+      arguments: { action: "queue", name: "notes", cursor: "50", limit: 10 },
     });
     assert.equal(last().method, "GET");
     assert.match(
       last().url,
-      /\/v1\/workflows\/named\/queue\?.*name=notes&after=50&limit=10$/,
+      /\/v1\/workflows\/named\/queue\?.*name=notes&cursor=50&limit=10$/,
     );
     await client.callTool({
       name: "lbb_workflows_manage",
