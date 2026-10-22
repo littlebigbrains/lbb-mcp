@@ -4,9 +4,140 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
 ## Unreleased
 
+- Requires `@littlebigbrain/client` `^0.30.0`. The MCP release (0.16.0,
+  with its lockfile) follows once the client is on npm.
+- `lbb_model_choice` action `choices` lists the model choices of the
+  workflow uses (`extract`, `decide`, `embed`): the environment's, and with
+  `workflow` the row in force for each use of that workflow, one page with
+  `cursor` and `limit`.
+  `lbb_model_choice_manage` actions `put_choice` (`use`, `provider`,
+  `model`, `effort`, `workflow`) and `delete_choice` (`use`, `workflow`)
+  set and remove a choice. They change only the model of future calls and
+  remove no data, so neither asks for approval. `provider` takes `mock` on
+  a local server. `lbb_workflows_manage` `tests_create` takes `models`
+  (`extract`, `decide`): the test runs on those models. These actions call
+  the client's `models.choices` and `models` on tests, which ship in the
+  client release after 0.30.0: the MCP release that has them requires
+  that client.
+- `lbb_workflows_manage` `define` takes one trigger of three: `class` (a
+  watch), `media_types` (a content trigger on uploads) or `schedule`
+  (`{cron, timezone}` or `{every, offset}`, and `jitter`). A call with
+  none or two of them is refused before any request.
+- `lbb_workflows` reads the history of a workflow's settings (`revisions`)
+  and one revision (`revision`); `lbb_workflows_manage` `activate` uses a
+  kept revision again, with `expected_revision`. An activation deletes no
+  data and asks for no confirmation.
+- `lbb_reviews` `list` and `patterns` take `eval_id`: the items Evals filed
+  for one record (a calibration session, a model call's check, a golden).
+  Answering such an item (a grade or a choice) asks for no approval.
 - `lbb_workflows_manage` `define` takes `budget_usd_per_month` (the
   workflow's own monthly model budget), `on_exhausted` (`block` or `skip`)
   and `fan_in` (the id of the workflow's fan-in identity).
+- `lbb_workflows` `queue` pages with `cursor`, the string `next_cursor` of
+  the page before, in place of the number `after`. The answer lists the
+  items in `data`, with `has_more` and `next_cursor`; `workflows` answers
+  one page of the workflows in `data` and takes `cursor` and `limit` too.
+- `lbb_configure` `evolve_ontology` `add_property` takes `unit`: the unit of
+  an `i64` or `f64` field, for example `mm`, `kg` or `h`. Writers that read
+  text, such as `values.extract`, convert numbers to it.
+- `evolve_ontology` gains `set_property_unit` (`property`, `unit`; no
+  `unit` clears it) and `set_property_constraint` (`property`,
+  `allowed_values`; an empty list clears it). `add_property` takes
+  `allowed_values`, the values a commit may write to the field.
+- The request bodies are checked against the API contract at compile time.
+  `lbb_commit` now checks each `entity_embeddings` item (`type`, `name`,
+  `model_id`, `vector`, optional `key`, `entity_id` and `metric`) and each
+  `evidence` (a string, or `text`, `source_id`, `region` and
+  `observation_id`) before it sends the commit. `search_feedback.profile`
+  is one of `baseline`, `scored_atom_v1`, `graph_aware_v1` and `ndcg_v1`.
+- **Breaking:** a destructive write asks the person first, and it is refused
+  when the client cannot ask. With MCP form elicitation, the server shows a
+  question that names what the call removes first, with the counts, and one
+  confirm box. A decline sends nothing and returns the error
+  `approval_declined`. A client without form elicitation (none, or URL
+  elicitation only) and the HTTP transport get `approval_required`, and
+  nothing is sent. This changes 0.15 callers of `lbb_commit` `mode=retract`,
+  of an `lbb_rdf` update that removes, and of the `*_delete` tools. `confirm`
+  is no longer an input of the `*_delete` tools: no tool argument lets a
+  call through, since the agent sets the arguments. To run these calls
+  without a question, as 0.15 did, the person sets
+  `LBB_MCP_DESTRUCTIVE=allow` in the MCP server's environment. A Node
+  process that runs the server can pass `destructiveWithoutApproval:
+  "allow"` instead.
+- **Hosted endpoint:** its HTTP transport cannot ask the person, and the
+  service does not set `LBB_MCP_DESTRUCTIVE`. So the hosted MCP endpoint
+  answers every destructive call with `approval_required`, whose message
+  names the console and the SDKs as the way to make that change. The
+  reason: a setting on the server is the only switch an injected prompt
+  cannot turn. A later release adds an option a person turns on for one
+  API key.
+- These calls ask: `lbb_embeddings_delete`, `lbb_fit_sources_delete`,
+  `lbb_workflows_delete` and `lbb_evals_delete`; `lbb_commit`
+  `mode=retract`, with the links and records it removes; `lbb_rdf` an update
+  with `DELETE`, `CLEAR`, `DROP`, `MOVE` or `COPY`, with each operation that
+  removes quoted first; `lbb_configure` `evolve_ontology` with
+  `remove_entity_type`, `remove_relation`, or `narrow_relation` with
+  `remove_domain` or `remove_range`, and `publish_schema` with
+  `desired_mode: "reject"`; `lbb_reviews_manage` `answer` and
+  `answer_batch` that accept or correct a `value` item or accept a `change`
+  item, with the count and the effect (the server reads the items and their
+  changes first). A preview (`dry_run`) does not ask. A question escapes
+  newlines and other control characters in names, so a name cannot add
+  lines of its own.
+- `lbb_commit`, `lbb_configure` and `lbb_reviews_manage` are marked
+  `destructiveHint: true`. The hint names the most a call of the tool can
+  do: an `lbb_commit` retract removes facts, an `evolve_ontology` can remove
+  types and relations, and accepting a review item commits facts or applies
+  an ontology change. So `lbb_commit` stays destructive, although most of
+  its calls add facts.
+- The server logs one JSON line per tool call to standard error: the tool,
+  its action, the outcome, the error code, the approval decision and the
+  JSON-RPC request id. A line holds no arguments, names or texts. The `log`
+  server option receives the events instead.
+- Inputs are no stricter than the server: the `evidence` and
+  `entity_embeddings` of `lbb_commit`, the facts of
+  `suggest_ontology_change` and the evidence of a review item take `null`
+  for an optional field, and pass a field the server does not know through
+  (the server ignores it), as 0.15.1 did. So `source_id: null` and
+  `key: null` work again. `search_feedback.profile` takes `null`.
+- A list page over 80,000 characters (`lbb_reviews` `list`,
+  `lbb_workflows` `queue` and `tests`, `lbb_evals` `datasets`) is asked for
+  again with the items that fit, so `next_cursor` continues after the last
+  item shown. The output had shown 3 items while `next_cursor` pointed after
+  the whole page. `next_cursor` is never shortened, and `queue` asks for at
+  most the items its `detail` level shows.
+- The pinned tool contract (its digest in the tests) changes for the
+  `evolve_ontology` unit and constraint operations (#1269) and for this
+  release's tools: reviews, workflow tests, Evals datasets and their delete,
+  and the approval rule.
+- New tools for review items (`/v1/reviews`). `lbb_reviews` reads them:
+  `list` (filters `status`, `kind`, `scope`, `origin_id`, `workflow`,
+  `run` and `key`; one page with `next_cursor`), `get` (`id`) and
+  `patterns`. `lbb_reviews_manage` writes them: `create` (an item of kind
+  `value`, `choice`, `grade` or `answer`), `answer`, `answer_batch`,
+  `comment` and `withdraw`. Each write sends an idempotency key, and a
+  retry after a network failure or a 5xx sends the same key, so the write
+  happens once. A list page holds at most the items the `detail`
+  level shows (5, 20 or 100), so `next_cursor` continues after the last
+  item you read.
+- Workflow tests: `lbb_workflows` gains `tests` (a page of the graph's
+  tests; `name`, `limit`, `cursor`) and `tests_get` (`id`).
+  `lbb_workflows_manage` gains `tests_create` (`name` of a workflow of the
+  graph, or `install` for one not created yet, and `iris` or `sample`),
+  `tests_answer` (`id`, `iri`, `property`, `answer`; `null` removes the
+  answer) and `tests_cancel` (`id`). A test writes nothing to the graph.
+- Evals datasets: `lbb_evals` gains `datasets` (a page; `limit`, `cursor`),
+  `datasets_get`, `datasets_export` (`records` and `expected`, as a
+  template's samples), `datasets_create` (`name`, `kind`, `items`,
+  `install`, `about`, or `source: {kind: "test", id}`) and `datasets_items`
+  (`id`, `items`). `items` takes the examples of a dataset as well as the
+  labels of `label`. The new tool `lbb_evals_delete` deletes a dataset by
+  `id` once the person approves. It reads the dataset first, so the
+  question names the dataset and its item count. A later `datasets_get` or
+  `datasets_export` of it answers 404, and the next save of its test makes
+  a new dataset.
+- The review, workflow test and dataset tools need `@littlebigbrain/client`
+  0.30.0, which adds `reviews`, `workflows.tests` and `evals.datasets`.
 
 ## 0.15.1 (2026-10-17)
 

@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { LbbClient } from "@littlebigbrain/client";
+import { LbbClient, type Schemas } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
 import {
@@ -19,22 +19,38 @@ import {
 } from "./query-tools.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { registerFilesTool } from "./files-tool.js";
+import { registerReviewsTools } from "./reviews-tool.js";
+import {
+  APPROVAL_TEXT,
+  graphLabel,
+  oneLine,
+  ontologyRemovalMessage,
+  retractMessage,
+  shapesRejectMessage,
+  toolHost,
+} from "./approval.js";
 import { queryTiming, type LbbServerOptions } from "./query-observer.js";
 import {
   DESTRUCTIVE,
-  IDEMPOTENT_WRITE,
   MUTATING,
   READ_ONLY,
   configureInputSchema,
   configureWireSchema,
   detailSchema,
+  entityEmbeddingSchema,
+  evalDatasetItemSchema,
+  evalLabelItemSchema,
+  evidenceSchema,
   graphScope,
   inspectInputSchema,
   inspectWireSchema,
   jsonObjectSchema,
   queryInputSchema,
   queryWireSchema,
+  reviewAnswerSchema,
   searchFeedbackSchema,
+  suggestedFactsBody,
+  testInstallSchema,
   yearMonthSchema,
   type QueryCursor,
 } from "./tool-contracts.js";
@@ -50,6 +66,7 @@ import {
   normalizeDetail,
   normalizeLbbIris,
   ontologyDefineBody,
+  pageLimit,
   queryCommitPin,
   queryEnvelope,
   queryToolResult,
@@ -57,19 +74,31 @@ import {
   rowPageFrom,
   rowPageNext,
   run,
+  runPage,
   scoped,
   stableJson,
   toolResult,
 } from "./tool-runtime.js";
+
+/** The most tests `GET /v1/workflows/named/tests` returns in one page. */
+const WORKFLOW_TESTS_PAGE_MAX = 50;
+/** The most items `GET /v1/workflows/named/queue` returns in one page. */
+const WORKFLOW_QUEUE_PAGE_MAX = 100;
+/** The most inputs `GET /v1/workflows/named/runs/results` returns in one page. */
+const WORKFLOW_RUN_RESULTS_PAGE_MAX = 200;
+/** The most datasets `GET /v1/evals/datasets` returns in one page. */
+const EVAL_DATASETS_PAGE_MAX = 50;
 
 export function registerLbbTools(
   server: McpServer,
   client: LbbClient,
   options: LbbServerOptions = {},
 ): void {
-  registerRdfTool(server, client);
-  registerFilesTool(server, client);
-  server.registerTool(
+  const host = toolHost(server, options);
+  registerRdfTool(host, client);
+  registerFilesTool(host, client);
+  registerReviewsTools(host, client);
+  host.register(
     "lbb_inspect",
     {
       description:
@@ -105,7 +134,7 @@ export function registerLbbTools(
               search: { concepts: true, terms: true, relations: true },
               top_k: args.top_k ?? 10,
               explain: false,
-            } as never);
+            });
           case "metadata":
             return target.metadata();
           case "ontology_suggestions":
@@ -133,7 +162,7 @@ export function registerLbbTools(
     },
   );
 
-  server.registerTool(
+  host.register(
     "lbb_query",
     {
       description:
@@ -331,7 +360,8 @@ export function registerLbbTools(
               const response = await timing.measureAsync(
                 "query_http_total",
                 () =>
-                  target.sparql(request as never, {
+                  // The body is the caller's JSON; the server checks it.
+                  target.sparql(request as Schemas["SparqlSelectRequest"], {
                     consistency,
                     minIndexedSeq,
                   }),
@@ -550,7 +580,7 @@ export function registerLbbTools(
     },
   );
 
-  server.registerTool(
+  host.register(
     "lbb_models",
     {
       description:
@@ -581,7 +611,8 @@ export function registerLbbTools(
         switch (action) {
           case "shadow_eval":
             if (!body) throw new Error("shadow_eval requires body");
-            return target.shadowEval(body as never);
+            // The body is the caller's JSON; the server checks it.
+            return target.shadowEval(body as Schemas["ShadowEvalRequest"]);
           case "suggest_dataset":
             return target.suggestDataset({ limit, splitSeq: split_seq });
           case "extractor_dataset":
@@ -639,7 +670,7 @@ export function registerLbbTools(
     };
   };
 
-  server.registerTool(
+  host.register(
     "lbb_embeddings",
     {
       description:
@@ -672,12 +703,12 @@ export function registerLbbTools(
               ...recipeOf(args),
               ...(args.sample ? { sample: args.sample } : {}),
               ...(args.iris ? { iris: args.iris } : {}),
-            } as never);
+            });
         }
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_embeddings_manage",
     {
       description:
@@ -699,7 +730,7 @@ export function registerLbbTools(
         const target = scoped(client, args.graph);
         switch (args.action) {
           case "declare":
-            return target.embeddings.declare(recipeOf(args) as never);
+            return target.embeddings.declare(recipeOf(args));
           case "refresh":
             if (!args.name) throw new Error("refresh requires name");
             return target.embeddings.refresh(args.name);
@@ -713,26 +744,26 @@ export function registerLbbTools(
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_embeddings_delete",
     {
-      description:
-        "Delete an embedding: its name and its vectors (index-gc removes the stored runs). Its class stops being searchable until it is declared and built again. Ask the user first; confirm must repeat the name.",
+      description: `Delete an embedding: its name and its vectors (index-gc removes the stored runs). Its class stops being searchable until it is declared and built again. ${APPROVAL_TEXT}`,
       inputSchema: {
         name: z.string().describe("The embedding name."),
-        confirm: z.string().describe("The same name again, to confirm."),
         detail: detailSchema,
         ...graphScope,
       },
       annotations: DESTRUCTIVE,
     },
-    ({ name, confirm, detail, graph }) =>
-      run(client, "lbb_embeddings_delete", detail, () => {
-        if (confirm !== name) {
-          throw new Error("confirm must repeat the embedding name");
-        }
-        return scoped(client, graph).embeddings.delete(name);
-      }),
+    async ({ name, detail, graph }, extra) => {
+      const refused = await host.approve(extra, {
+        message: `Delete the embedding "${oneLine(name)}" of ${graphLabel(client, graph)} and its vectors? Its class stops being searchable until it is declared and built again.`,
+      });
+      if (refused) return refused;
+      return run(client, "lbb_embeddings_delete", detail, () =>
+        scoped(client, graph).embeddings.delete(name),
+      );
+    },
   );
 
   // Fit from text: fit sources declared on classes, like embeddings.
@@ -779,7 +810,7 @@ export function registerLbbTools(
     };
   };
 
-  server.registerTool(
+  host.register(
     "lbb_fit_sources",
     {
       description:
@@ -817,7 +848,7 @@ export function registerLbbTools(
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_fit_sources_manage",
     {
       description:
@@ -849,26 +880,26 @@ export function registerLbbTools(
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_fit_sources_delete",
     {
-      description:
-        "Delete a fit source: the fit stops reading its class. The suggestions it filed stay. Ask the user first; confirm must repeat the name.",
+      description: `Delete a fit source: the fit stops reading its class. The suggestions it filed stay. ${APPROVAL_TEXT}`,
       inputSchema: {
         name: z.string().describe("The fit source name."),
-        confirm: z.string().describe("The same name again, to confirm."),
         detail: detailSchema,
         ...graphScope,
       },
       annotations: DESTRUCTIVE,
     },
-    ({ name, confirm, detail, graph }) =>
-      run(client, "lbb_fit_sources_delete", detail, () => {
-        if (confirm !== name) {
-          throw new Error("confirm must repeat the fit source name");
-        }
-        return scoped(client, graph).ontology.fitSources.delete(name);
-      }),
+    async ({ name, detail, graph }, extra) => {
+      const refused = await host.approve(extra, {
+        message: `Delete the fit source "${oneLine(name)}" of ${graphLabel(client, graph)}? The fit stops reading its class. The suggestions it filed stay.`,
+      });
+      if (refused) return refused;
+      return run(client, "lbb_fit_sources_delete", detail, () =>
+        scoped(client, graph).ontology.fitSources.delete(name),
+      );
+    },
   );
 
   // Starter workflows and triggered workflows: one API over everything that
@@ -985,6 +1016,10 @@ export function registerLbbTools(
     if (!args.name) throw new Error("this action requires name");
     return args.name;
   };
+  const revisionId = (revision: string | undefined) => {
+    if (!revision) throw new Error("this action requires revision");
+    return revision;
+  };
   // A workflow with triggers (`/v1/workflows/named`): your worker's
   // workflow type, one watch trigger, shards, routing and window.
   const namedSetup = {
@@ -1016,7 +1051,52 @@ export function registerLbbTools(
       .string()
       .optional()
       .describe(
-        "define: the watch trigger's id (default watch). queue: the trigger whose queue to read.",
+        "define: the trigger's id (default watch, content or schedule). queue: the trigger whose queue to read.",
+      ),
+    media_types: z
+      .array(z.string())
+      .min(1)
+      .max(32)
+      .optional()
+      .describe(
+        "define, in place of class: a content trigger on the uploads of these media types (application/pdf, image/*, */*), one content per message, without a wait for a publication.",
+      ),
+    schedule: z
+      .object({
+        cron: z
+          .string()
+          .optional()
+          .describe(
+            "Five fields: minute, hour, day of month, month, day of week (0 3 * * 1-5), or @daily and the other macros.",
+          ),
+        timezone: z
+          .string()
+          .optional()
+          .describe(
+            "With cron: an IANA time zone (Europe/Berlin). Default UTC.",
+          ),
+        every: z
+          .string()
+          .optional()
+          .describe(
+            "In place of cron: a period in UTC, 5m to 366d (15m, 6h, 1d).",
+          ),
+        offset: z
+          .string()
+          .optional()
+          .describe(
+            "With every: moves each slot (every 1d, offset 3h runs at 03:00 UTC).",
+          ),
+        jitter: z
+          .string()
+          .optional()
+          .describe(
+            "Each slot runs up to this much later, the same delay each time; at most 1h.",
+          ),
+      })
+      .optional()
+      .describe(
+        "define, in place of class: a schedule. One message per slot, at least 5 minutes apart, to one shard; a slot runs even when nothing changed (the message's changed is false).",
       ),
     on_exhausted: z
       .enum(["block", "skip"])
@@ -1042,25 +1122,43 @@ export function registerLbbTools(
     route_by?: string;
     window?: number;
     trigger?: string;
+    media_types?: string[];
+    schedule?: {
+      cron?: string;
+      timezone?: string;
+      every?: string;
+      offset?: string;
+      jitter?: string;
+    };
     budget_usd_per_month?: number;
     on_exhausted?: "block" | "skip";
     fan_in?: string;
   }) => {
-    if (!args.name || !args.class || !args.workflow) {
-      throw new Error("define requires name, class and workflow");
+    if (!args.name || !args.workflow) {
+      throw new Error("define requires name and workflow");
     }
+    const kinds = [args.class, args.media_types, args.schedule].filter(
+      (kind) => kind !== undefined,
+    ).length;
+    if (kinds !== 1) {
+      throw new Error(
+        "define takes one trigger: class (a watch), media_types (a content trigger) or schedule",
+      );
+    }
+    const trigger = args.schedule
+      ? { schedule: args.schedule }
+      : args.media_types
+        ? { content: { media_types: args.media_types } }
+        : {
+            watch: {
+              class: args.class as string,
+              ...(args.fields ? { fields: args.fields } : {}),
+            },
+          };
     return {
       name: args.name,
       workflow: args.workflow,
-      triggers: [
-        {
-          ...(args.trigger ? { id: args.trigger } : {}),
-          watch: {
-            class: args.class,
-            ...(args.fields ? { fields: args.fields } : {}),
-          },
-        },
-      ],
+      triggers: [{ ...(args.trigger ? { id: args.trigger } : {}), ...trigger }],
       ...(args.owns ? { owns: args.owns } : {}),
       ...(args.batch !== undefined ? { batch: args.batch } : {}),
       ...(args.shards !== undefined ? { shards: args.shards } : {}),
@@ -1074,11 +1172,51 @@ export function registerLbbTools(
     };
   };
 
-  server.registerTool(
+  // A workflow test (`client.workflows.tests`) runs a values.extract
+  // workflow on chosen inputs and writes nothing to the graph.
+  const testId = (args: { id?: string }) => {
+    if (!args.id) throw new Error("this action requires id");
+    return args.id;
+  };
+  // The one place that builds a test's request: a workflow of the graph by
+  // `name`, or a workflow to create (`install`).
+  const testModel = z.object({
+    provider: z.enum(["anthropic", "typesafe", "mock"]),
+    model: z.string(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  });
+  const testRequest = (args: {
+    name?: string;
+    install?: z.infer<typeof testInstallSchema>;
+    iris?: string[];
+    sample?: number;
+    models?: {
+      extract?: z.infer<typeof testModel>;
+      decide?: z.infer<typeof testModel>;
+    };
+  }): Schemas["WorkflowTestCreateRequest"] => {
+    const inputs = {
+      ...(args.iris ? { iris: args.iris } : {}),
+      ...(args.sample !== undefined ? { sample: args.sample } : {}),
+      ...(args.models ? { models: args.models } : {}),
+    };
+    if (args.install) {
+      if (args.name) {
+        throw new Error(
+          "tests_create takes name (a workflow of the graph) or install (a workflow to create), and not both",
+        );
+      }
+      return { install: args.install, ...inputs };
+    }
+    if (!args.name) throw new Error("tests_create requires name or install");
+    return { name: args.name, ...inputs };
+  };
+
+  host.register(
     "lbb_workflows",
     {
       description:
-        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox; name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; page with after and limit. Message workflows of the workflow engine are not listed here. Create, refresh, pause or resume with lbb_workflows_manage; delete with lbb_workflows_delete.",
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox, one page in data (has_more and next_cursor page them with cursor and limit); name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; the items are in data, and has_more and next_cursor page them with cursor and limit. run_results (name) shows what the workflow's runs did with each input, newest run first: the input's IRI and label, its outcome (written, review, no_value, failed, duplicate) and its values (the value, the quote that states it, its support, the conversion, and the review item it went to); run keeps one run (with run_counts, every input by outcome), outcome keeps some outcomes, iri keeps one input; data, has_more and next_cursor page them. A run records its results when it ends; they are kept 30 days. revisions (name) shows the history of a workflow's settings, newest change first: each item is a revision (settings, the request that makes it, and an id wrev_… that is the hash of the settings) with who changed it, when, how (create, change, activate, existing) and bound (the one in use); a row whose revision was deleted has available false and no settings; has_more and next_cursor page it with cursor and limit (1 to 100, default 20). revision (name, revision) reads one revision; compare two by their settings to say what changed. Each run summary names the revision it ran on. Message workflows of the workflow engine are not listed here. tests lists the graph's workflow tests, newest first, without texts and results (name: one workflow's tests), one page with next_cursor; tests_get reads one test (id) with its inputs' texts and, per input, each value read with its quote, its support and what the live workflow does with it (writes it, gives it to review, or drops it). A test goes queued, running, then done, failed or cancelled. Create, refresh, pause or resume with lbb_workflows_manage, which also starts, answers and cancels tests and goes back to an earlier revision with its action activate; delete with lbb_workflows_delete.",
       inputSchema: {
         action: z.enum([
           "starters",
@@ -1087,28 +1225,58 @@ export function registerLbbTools(
           "preview",
           "workflows",
           "queue",
+          "revisions",
+          "revision",
+          "run_results",
+          "tests",
+          "tests_get",
         ]),
         name: z
           .string()
           .optional()
           .describe(
-            "get: the triggered workflow's name. preview: the name a new workflow would get. workflows: one workflow's name (omit for all). queue: required.",
+            "get: the triggered workflow's name. preview: the name a new workflow would get. workflows: one workflow's name (omit for all). queue, run_results, revisions and revision: required. tests: one workflow's tests (omit for all).",
           ),
+        revision: z
+          .string()
+          .optional()
+          .describe(
+            "revision: the revision's id (wrev_ and 32 hex characters).",
+          ),
+        run: z
+          .string()
+          .optional()
+          .describe(
+            "run_results: one run's results (a run id), in input order.",
+          ),
+        outcome: z
+          .array(
+            z.enum(["written", "review", "no_value", "failed", "duplicate"]),
+          )
+          .optional()
+          .describe("run_results: only the inputs of these outcomes."),
+        iri: z
+          .string()
+          .optional()
+          .describe("run_results: only the results of this input."),
         ...workflowSetup,
         trigger: namedSetup.trigger,
-        after: z
-          .number()
-          .int()
-          .nonnegative()
+        cursor: z
+          .string()
           .optional()
-          .describe("queue: the position to start from (next_after)."),
+          .describe(
+            "queue, tests, workflows, run_results and revisions: the next_cursor of the page before.",
+          ),
         limit: z
           .number()
           .int()
           .min(1)
           .max(100)
           .optional()
-          .describe("queue: items per page, 1 to 100 (default 50)."),
+          .describe(
+            "queue: items per page, 1 to 100 (default 50). run_results: inputs per page, at most 5, 20 or 100 by detail (compact, standard, full), and by default that many. workflows: workflows per page, 1 to 100 (the server's default 100). tests: tests per page, at most 5, 20 or 50 by detail (compact, standard, full) and by default that many, so the page comes back whole. revisions: revisions per page, 1 to 100 (default 20).",
+          ),
+        id: z.string().optional().describe("tests_get: the test's id."),
         sample: z
           .number()
           .int()
@@ -1125,10 +1293,57 @@ export function registerLbbTools(
       },
       annotations: READ_ONLY,
     },
-    (args) =>
-      run(client, `lbb_workflows.${args.action}`, args.detail, () => {
-        const workflows = scoped(client, args.graph).workflows;
-        switch (args.action) {
+    (args) => {
+      const workflows = scoped(client, args.graph).workflows;
+      if (args.action === "queue") {
+        const name = workflowName(args);
+        return runPage(
+          client,
+          "lbb_workflows.queue",
+          args.detail,
+          pageLimit(args.detail, args.limit, WORKFLOW_QUEUE_PAGE_MAX),
+          (limit) =>
+            workflows.named.queue(name, {
+              ...(args.trigger ? { trigger: args.trigger } : {}),
+              ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+              limit,
+            }),
+        );
+      }
+      if (args.action === "run_results") {
+        const name = workflowName(args);
+        return runPage(
+          client,
+          "lbb_workflows.run_results",
+          args.detail,
+          pageLimit(args.detail, args.limit, WORKFLOW_RUN_RESULTS_PAGE_MAX),
+          (limit) =>
+            workflows.named.runResults(name, {
+              ...(args.run ? { run: args.run } : {}),
+              ...(args.outcome?.length ? { outcome: args.outcome } : {}),
+              ...(args.iri ? { iri: args.iri } : {}),
+              ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+              limit,
+            }),
+        );
+      }
+      if (args.action === "tests") {
+        return runPage(
+          client,
+          "lbb_workflows.tests",
+          args.detail,
+          pageLimit(args.detail, args.limit, WORKFLOW_TESTS_PAGE_MAX),
+          (limit) =>
+            workflows.tests.list({
+              name: args.name,
+              limit,
+              cursor: args.cursor,
+            }),
+        );
+      }
+      const action = args.action;
+      return run(client, `lbb_workflows.${action}`, args.detail, () => {
+        switch (action) {
           case "starters":
             return workflows.starters.list();
           case "list":
@@ -1144,29 +1359,50 @@ export function registerLbbTools(
           case "workflows":
             return args.name
               ? workflows.named.get(args.name)
-              : workflows.named.list();
-          case "queue":
-            return workflows.named.queue(workflowName(args), {
-              ...(args.trigger ? { trigger: args.trigger } : {}),
-              ...(args.after !== undefined ? { after: args.after } : {}),
+              : workflows.named.list({
+                  ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+                  ...(args.limit !== undefined ? { limit: args.limit } : {}),
+                });
+          case "revisions":
+            return workflows.named.revisions(workflowName(args), {
+              ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
               ...(args.limit !== undefined ? { limit: args.limit } : {}),
             });
+          case "revision":
+            return workflows.named.getRevision(
+              workflowName(args),
+              revisionId(args.revision),
+            );
+          case "tests_get":
+            return workflows.tests.get(testId(args));
         }
-      }),
+      });
+    },
   );
 
-  server.registerTool(
+  host.register(
     "lbb_workflows_manage",
     {
       description:
-        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, class and fields (its watch trigger), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again.",
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, one trigger (class and fields for a watch, media_types for a content trigger on uploads, or schedule for one run per slot of a timer), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again, a content trigger reads its log again, a schedule sends one run outside its slots. activate (name, revision) makes an earlier revision of a workflow's settings (from lbb_workflows action=revisions) the one in use: it goes through the same checks as a change, and answers the workflow with its active_revision. Show the user what changes first (compare the settings of the two revisions), and pass expected_revision, the revision you read as bound, so a change by someone else since fails with workflow_revision_conflict. A revision whose settings the graph now reads differently fails with workflow_revision_stale; then change the workflow instead. Activating changes what the workflow does from then on and deletes no data, so it is not a destructive write; a change of the watch, the parameters or the gate makes the workflow read its class again, and work that waits or runs keeps the revision it started with. tests_create tests a values.extract workflow on chosen inputs before it writes: name (a workflow of the graph; starter defaults to values.extract) or install (a workflow not created yet, as use takes it: starter, name, watch, params, gate), and iris (at most 20) or sample (1 to 20, default 6), and models to try other models before choosing one. A test reads each input as the workflow would and calls its models (the calls count in the monthly workflow budget); it writes nothing to the graph. Poll lbb_workflows action=tests_get. tests_answer records the person's answer to one value of a read input (id, iri, property, answer: accept, reject, correct with value, or cant_tell; null removes it); it writes nothing to the graph. Answer only what the user decided. tests_cancel stops a queued or running test (id). Save a test's answers as a dataset with lbb_evals action=datasets_create.",
       inputSchema: {
-        action: z.enum(["use", "refresh", "pause", "resume", "define", "run"]),
+        action: z.enum([
+          "use",
+          "refresh",
+          "pause",
+          "resume",
+          "define",
+          "run",
+          "activate",
+          "tests_create",
+          "tests_answer",
+          "tests_cancel",
+        ]),
         name: z
           .string()
           .optional()
           .describe(
-            "The triggered workflow's name, [a-z0-9][a-z0-9-]{0,62} (refresh, pause, resume: required; use: omit for the class's local name).",
+            "The triggered workflow's name, [a-z0-9][a-z0-9-]{0,62} (refresh, pause, resume: required; use: omit for the class's local name; tests_create: the workflow of the graph to test).",
           ),
         ...workflowSetup,
         gate: z
@@ -1185,6 +1421,64 @@ export function registerLbbTools(
             "use and define: a monthly model budget in USD for this workflow, below the stack's own. For define, its turns' activity calls stop at it (429 workflow_budget_exceeded) and the turn waits until the next month.",
           ),
         ...namedSetup,
+        revision: z
+          .string()
+          .optional()
+          .describe(
+            "activate: the revision to use (wrev_ and 32 hex characters).",
+          ),
+        expected_revision: z
+          .string()
+          .optional()
+          .describe(
+            "activate: the revision the workflow had bound when you read it; another one fails with workflow_revision_conflict.",
+          ),
+        install: testInstallSchema
+          .optional()
+          .describe(
+            "tests_create: a workflow not created yet, as use takes it: starter (values.extract), name, watch ({class, fields, exclude}), params and gate ({below}).",
+          ),
+        iris: z
+          .array(z.string())
+          .max(20)
+          .optional()
+          .describe("tests_create: the instances to test, at most 20."),
+        sample: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe(
+            "tests_create: the first instances of the watched class instead, 1 to 20 (default 6).",
+          ),
+        models: z
+          .object({
+            extract: testModel.optional(),
+            decide: testModel.optional(),
+          })
+          .optional()
+          .describe(
+            "tests_create: other models to run the test on, per use (extract, decide), each one of the use's options in lbb_model_choice action=choices. The test's models name the ones it ran.",
+          ),
+        id: z
+          .string()
+          .optional()
+          .describe("tests_answer, tests_cancel: the test's id."),
+        iri: z
+          .string()
+          .optional()
+          .describe("tests_answer: the input, by its instance IRI."),
+        property: z
+          .string()
+          .optional()
+          .describe("tests_answer: the property of the value."),
+        answer: reviewAnswerSchema
+          .nullable()
+          .optional()
+          .describe(
+            "tests_answer: { decision: accept | reject | correct | cant_tell, value (with correct), note }; null removes the answer. For a property without a value, accept says the text states none, and correct gives the value it states.",
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1210,15 +1504,38 @@ export function registerLbbTools(
             return workflows.named.put(namedRequest(args));
           case "run":
             return workflows.named.run(workflowName(args));
+          case "activate":
+            return workflows.named.activateRevision(
+              workflowName(args),
+              revisionId(args.revision),
+              args.expected_revision
+                ? { expectedRevision: args.expected_revision }
+                : {},
+            );
+          case "tests_create":
+            return workflows.tests.create(testRequest(args));
+          case "tests_answer":
+            if (!args.iri || !args.property || args.answer === undefined) {
+              throw new Error(
+                "tests_answer requires id, iri, property and answer (null removes it)",
+              );
+            }
+            return workflows.tests.answer({
+              id: testId(args),
+              iri: args.iri,
+              property: args.property,
+              answer: args.answer,
+            });
+          case "tests_cancel":
+            return workflows.tests.cancel(testId(args));
         }
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_workflows_delete",
     {
-      description:
-        "Delete a triggered workflow: it stops following its class, and what it wrote stays. Deleting search.embed deletes the embedding and its vectors, so its class stops being searchable; the suggestions an ontology.fit filed stay; a developer workflow leaves its workflow instance and the facts its code wrote. Without starter it deletes a workflow with triggers by its name, and its shards stay. Ask the user first; confirm must repeat the name.",
+      description: `Delete a triggered workflow: it stops following its class, and what it wrote stays. Deleting search.embed deletes the embedding and its vectors, so its class stops being searchable; the suggestions an ontology.fit filed stay; a developer workflow leaves its workflow instance and the facts its code wrote. Without starter it deletes a workflow with triggers by its name, and its shards stay. ${APPROVAL_TEXT}`,
       inputSchema: {
         starter: z
           .string()
@@ -1227,22 +1544,28 @@ export function registerLbbTools(
             "The starter workflow's catalog id, e.g. search.embed. Omit for a workflow with triggers.",
           ),
         name: z.string().describe("The triggered workflow's name."),
-        confirm: z.string().describe("The same name again, to confirm."),
         detail: detailSchema,
         ...graphScope,
       },
       annotations: DESTRUCTIVE,
     },
-    ({ starter, name, confirm, detail, graph }) =>
-      run(client, "lbb_workflows_delete", detail, () => {
-        if (confirm !== name) {
-          throw new Error("confirm must repeat the workflow name");
-        }
+    async ({ starter, name, detail, graph }, extra) => {
+      const where = graphLabel(client, graph);
+      const refused = await host.approve(extra, {
+        message: !starter
+          ? `Delete the workflow with triggers "${oneLine(name)}" of ${where}? Its shards stay.`
+          : starter.startsWith("search.embed")
+            ? `Delete the search.embed workflow "${oneLine(name)}" of ${where}, with its embedding and vectors? Its class stops being searchable.`
+            : `Delete the ${oneLine(starter)} workflow "${oneLine(name)}" of ${where}? It stops following its class, and what it wrote stays.`,
+      });
+      if (refused) return refused;
+      return run(client, "lbb_workflows_delete", detail, () => {
         const workflows = scoped(client, graph).workflows;
         return starter
           ? workflows.triggered.delete({ starter, name })
           : workflows.named.delete(name);
-      }),
+      });
+    },
   );
 
   const modelUse = z
@@ -1250,12 +1573,17 @@ export function registerLbbTools(
     .describe(
       "A use of a model: ask = question answers, route = query routing, rerank = search rerank, fit = ontology fit, label = eval labels.",
     );
+  const workflowUse = z
+    .enum(["extract", "decide", "embed"])
+    .describe(
+      "A use of a workflow's AI steps: extract = the reasoning model (values.extract reads values, the reason activity), decide = the decision model (the support of a value, the decide activity), embed = the embedding model (listed, takes no choice).",
+    );
 
-  server.registerTool(
+  host.register(
     "lbb_model_choice",
     {
       description:
-        "Model choice, read only: which model each use of a model on the graph runs, and trials that test other models against the graph's ground truth (the checked calls: a person's review, else the judge's verdict). options shows per use the model it runs now (current), LBB's model (default), a switch (switched), its checked calls, and the models a trial can test with their efforts, prices and whether the server holds their key; available=false with a reason when trials cannot run. trials lists the trials, newest first, each with its report: calls compared, both models' right share, mean score (0 to 1), cost per call and median time, the difference with its 95% interval (delta, ci_low, ci_high), outcome (too_few, better, same, worse) and qualifies (meets the bar: at least 20 calls, at most 5 points worse at the low end, no more failures, cheaper or better). trial reads one trial with its compared calls; trial_call reads one call with both answers and the ground truth. switches lists the switched uses. Start, stop, switch or revert with lbb_model_choice_manage.",
+        "Model choice, read only: which model each use of a model on the graph runs, and trials that test other models against the graph's ground truth (the checked calls: a person's review, else the judge's verdict). options shows per use the model it runs now (current), LBB's model (default), a switch (switched), its checked calls, and the models a trial can test with their efforts, prices and whether the server holds their key; available=false with a reason when trials cannot run. trials lists the trials, newest first, each with its report: calls compared, both models' right share, mean score (0 to 1), cost per call and median time, the difference with its 95% interval (delta, ci_low, ci_high), outcome (too_few, better, same, worse) and qualifies (meets the bar: at least 20 calls, at most 5 points worse at the low end, no more failures, cheaper or better). trial reads one trial with its compared calls; trial_call reads one call with both answers and the ground truth. switches lists the switched uses. choices lists the model choices of the workflow uses (extract, decide, embed): without workflow the environment's row of each use and each workflow's own choice; with workflow the row in force for each of its uses (its own, else the environment's, else the default). A row has scope (environment or workflow), model, source (person or default), since, by, the model before, the use's default and options (the models it can run, with efforts, list prices and whether the server holds their key). One page in data: has_more and next_cursor page it with cursor and limit. Start, stop, switch or revert, and set or remove a choice, with lbb_model_choice_manage.",
       inputSchema: {
         action: z.enum([
           "options",
@@ -1263,6 +1591,7 @@ export function registerLbbTools(
           "trial",
           "trial_call",
           "switches",
+          "choices",
         ]),
         trial_id: z
           .string()
@@ -1281,7 +1610,18 @@ export function registerLbbTools(
           .positive()
           .max(50)
           .optional()
-          .describe("trials: at most this many, newest first (default 20)."),
+          .describe(
+            "trials: at most this many, newest first (default 20); choices: rows per page (default 50).",
+          ),
+        workflow: z
+          .string()
+          .optional()
+          .describe("choices: a named workflow: the rows in force for it."),
+        use: workflowUse.optional().describe("choices: one use."),
+        cursor: z
+          .string()
+          .optional()
+          .describe("choices: the next_cursor of the page before."),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1305,31 +1645,47 @@ export function registerLbbTools(
             return models.trials.call(args.trial_id, args.call_id);
           case "switches":
             return models.switches.list();
+          case "choices":
+            return models.choices.list({
+              workflow: args.workflow,
+              use: args.use,
+              limit: args.limit,
+              cursor: args.cursor,
+            });
         }
       }),
   );
 
-  server.registerTool(
+  host.register(
     "lbb_model_choice_manage",
     {
       description:
-        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most the trial budget ($3.00 by default) of model and judge cost; an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model.",
+        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most the trial budget ($3.00 by default) of model and judge cost; an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model. put_choice chooses the model of a workflow use (use extract or decide, provider, model, effort) for the environment, or for one workflow with workflow: the next calls run it. Pick the model from the row's options in lbb_model_choice action=choices, show the user the price per million tokens of the model in use and of the new one, and set only what the user confirmed. delete_choice removes a choice: the use runs the environment's choice, else its default; it answers {id, object, deleted: true}. Both change only the model of future calls and remove no data, so neither asks for approval.",
       inputSchema: {
-        action: z.enum(["start", "stop", "switch", "revert"]),
+        action: z.enum([
+          "start",
+          "stop",
+          "switch",
+          "revert",
+          "put_choice",
+          "delete_choice",
+        ]),
         provider: z
-          .enum(["anthropic", "typesafe"])
+          .enum(["anthropic", "typesafe", "mock"])
           .optional()
-          .describe("start: the candidate's provider."),
+          .describe(
+            "start: the candidate's provider; put_choice: the model's provider (mock only on a local server).",
+          ),
         model: z
           .string()
           .optional()
           .describe(
-            "start: the candidate model id, e.g. claude-haiku-5-5 or jev-latest.",
+            "start / put_choice: the model id, e.g. claude-haiku-5-5 or jev-latest.",
           ),
         effort: z
           .enum(["low", "medium", "high", "xhigh", "max"])
           .optional()
-          .describe("start: the effort of a Claude candidate."),
+          .describe("start / put_choice: the effort of a Claude model."),
         jobs: z
           .array(modelUse)
           .optional()
@@ -1355,6 +1711,15 @@ export function registerLbbTools(
         job: modelUse
           .optional()
           .describe("revert: the use to put back on LBB's model."),
+        use: workflowUse
+          .optional()
+          .describe("put_choice / delete_choice: the workflow use."),
+        workflow: z
+          .string()
+          .optional()
+          .describe(
+            "put_choice / delete_choice: a named workflow of the graph; absent for the environment.",
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1387,15 +1752,39 @@ export function registerLbbTools(
           case "revert":
             if (!args.job) throw new Error("revert requires job");
             return models.switches.revert(args.job);
+          case "put_choice":
+            if (!args.use || !args.provider || !args.model) {
+              throw new Error("put_choice requires use, provider and model");
+            }
+            return models.choices.put({
+              use: args.use,
+              model: {
+                provider: args.provider,
+                model: args.model,
+                ...(args.effort ? { effort: args.effort } : {}),
+              },
+              ...(args.workflow ? { workflow: args.workflow } : {}),
+            });
+          case "delete_choice":
+            if (!args.use) throw new Error("delete_choice requires use");
+            return models.choices.delete({
+              use: args.use,
+              workflow: args.workflow,
+            });
         }
       }),
   );
 
-  server.registerTool(
+  const datasetId = (id?: string) => {
+    if (!id) throw new Error("this action requires id");
+    return id;
+  };
+
+  host.register(
     "lbb_evals",
     {
       description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -1414,6 +1803,11 @@ export function registerLbbTools(
           "checks_summary",
           "checks",
           "review_check",
+          "datasets",
+          "datasets_get",
+          "datasets_export",
+          "datasets_create",
+          "datasets_items",
         ]),
         trace_id: z
           .string()
@@ -1432,17 +1826,11 @@ export function registerLbbTools(
             "label: true = the result answers the request (thumbs up), false = it does not. Without item or items, on a question's trace: the whole answer is right (true) or wrong (false).",
           ),
         items: z
-          .array(
-            z
-              .object({
-                id: z.string(),
-                valid: z.boolean(),
-                note: z.string().optional(),
-              })
-              .strict(),
-          )
+          .array(z.union([evalLabelItemSchema, evalDatasetItemSchema]))
           .optional()
-          .describe("label: several results at once."),
+          .describe(
+            "label: several results at once, each {id, valid, note}. datasets_create, datasets_items: the examples, at most 500, each {name, text, values, leave_out, iri, case}; values and leave_out hold {property, value, accept, stated, quote, reason}.",
+          ),
         by: z
           .string()
           .optional()
@@ -1611,6 +1999,54 @@ export function registerLbbTools(
           .describe(
             'review_check with agree=false: the right answer. A rerank or label check: {"grades": {"<hit id>": 0..3}}; a route or fit check: {"picks": {"<question id>": "<option>"}}.',
           ),
+        id: z
+          .string()
+          .optional()
+          .describe(
+            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…).",
+          ),
+        cursor: z
+          .string()
+          .optional()
+          .describe("datasets: the next_cursor of the page before."),
+        name: z
+          .string()
+          .optional()
+          .describe("datasets_create: the dataset's name."),
+        kind: z
+          .enum(["values"])
+          .optional()
+          .describe(
+            "datasets_create: what the items hold: values (the default).",
+          ),
+        install: z
+          .object({
+            properties: z
+              .record(z.string(), z.string())
+              .optional()
+              .describe(
+                "Each property's value type: text, keyword, i64, f64 or bool",
+              ),
+            units: z
+              .record(z.string(), z.string())
+              .optional()
+              .describe("The unit of each number property"),
+            context: z.string().optional(),
+          })
+          .strict()
+          .optional()
+          .describe("datasets_create: the settings it is graded with."),
+        about: z
+          .array(z.string())
+          .optional()
+          .describe("datasets_create: what the dataset is, in sentences."),
+        source: z
+          .object({ kind: z.literal("test"), id: z.string() })
+          .strict()
+          .optional()
+          .describe(
+            'datasets_create: {"kind": "test", "id": <test id>}: the answers of a workflow test become the items, and its settings the install.',
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1645,10 +2081,27 @@ export function registerLbbTools(
       agree,
       score,
       reference,
+      id,
+      cursor,
+      name,
+      kind,
+      install,
+      about,
+      source,
       detail,
       graph,
-    }) =>
-      run(client, `lbb_evals.${action}`, detail, () => {
+    }) => {
+      if (action === "datasets") {
+        const datasets = scoped(client, graph).evals.datasets;
+        return runPage(
+          client,
+          "lbb_evals.datasets",
+          detail,
+          pageLimit(detail, limit, EVAL_DATASETS_PAGE_MAX),
+          (pageSize) => datasets.list({ limit: pageSize, cursor }),
+        );
+      }
+      return run(client, `lbb_evals.${action}`, detail, () => {
         const target = scoped(client, graph);
         switch (action) {
           case "summary":
@@ -1658,17 +2111,18 @@ export function registerLbbTools(
           case "trace":
             if (!trace_id) throw new Error("trace requires trace_id");
             return target.evals.trace(trace_id);
-          case "label":
+          case "label": {
             if (!trace_id) throw new Error("label requires trace_id");
+            const labels = items && z.array(evalLabelItemSchema).parse(items);
             if (item && valid === undefined)
               throw new Error("label requires valid with item");
-            if (!item && !items?.length && valid === undefined)
+            if (!item && !labels?.length && valid === undefined)
               throw new Error(
                 "label requires item (with valid), items, or valid alone for the answer of a question",
               );
             if (
               sparql !== undefined &&
-              (item || items?.length || valid !== false)
+              (item || labels?.length || valid !== false)
             )
               throw new Error(
                 "label takes sparql (the right query) only with valid=false and no item",
@@ -1676,7 +2130,7 @@ export function registerLbbTools(
             if (
               route !== undefined &&
               (item ||
-                items?.length ||
+                labels?.length ||
                 (valid !== true && sparql === undefined))
             )
               throw new Error(
@@ -1684,14 +2138,15 @@ export function registerLbbTools(
               );
             return target.evals.label(trace_id, {
               ...(item ? { item, valid } : {}),
-              ...(items?.length ? { items } : {}),
+              ...(labels?.length ? { items: labels } : {}),
               // The answer of a question as a whole.
-              ...(!item && !items?.length ? { valid } : {}),
+              ...(!item && !labels?.length ? { valid } : {}),
               ...(sparql !== undefined ? { sparql } : {}),
               ...(route !== undefined ? { route } : {}),
               by,
               note,
             });
+          }
           case "judge":
             return target.evals.judge({ traceId: trace_id, limit });
           case "goldens":
@@ -1759,15 +2214,72 @@ export function registerLbbTools(
               ...(reference ? { reference } : {}),
               ...(note ? { note } : {}),
             });
+          case "datasets_get":
+            return target.evals.datasets.get(datasetId(id));
+          case "datasets_export":
+            return target.evals.datasets.export(datasetId(id));
+          case "datasets_create": {
+            if (!name) throw new Error("datasets_create requires name");
+            const examples =
+              items && z.array(evalDatasetItemSchema).parse(items);
+            if (!source && !examples?.length)
+              throw new Error(
+                "datasets_create requires items, or a source (a workflow test)",
+              );
+            return target.evals.datasets.create({
+              name,
+              kind: kind ?? "values",
+              ...(examples ? { items: examples } : {}),
+              ...(install ? { install } : {}),
+              ...(about ? { about } : {}),
+              ...(source ? { source } : {}),
+            });
+          }
+          case "datasets_items": {
+            const examples =
+              items && z.array(evalDatasetItemSchema).parse(items);
+            if (!examples?.length)
+              throw new Error("datasets_items requires items");
+            return target.evals.datasets.addItems(datasetId(id), examples);
+          }
         }
-      }),
+      });
+    },
   );
 
-  server.registerTool(
+  host.register(
+    "lbb_evals_delete",
+    {
+      description: `Delete an Evals dataset by id, with its items. A later datasets_get or datasets_export of it answers 404, and the next save of its workflow test makes a new dataset. The server reads the dataset first, so the question names it and its item count. ${APPROVAL_TEXT}`,
+      inputSchema: {
+        id: z.string().describe("The dataset's id (ds_…)."),
+        detail: detailSchema,
+        ...graphScope,
+      },
+      annotations: DESTRUCTIVE,
+    },
+    async ({ id, detail, graph }, extra) => {
+      const datasets = scoped(client, graph).evals.datasets;
+      const refused = await host.approve(extra, {
+        message: async () => {
+          const dataset = await datasets
+            .get(id)
+            .catch(async (error: unknown) => {
+              throw await enrichError(client, error);
+            });
+          const items = `${dataset.item_count} item${dataset.item_count === 1 ? "" : "s"}`;
+          return `Delete the dataset "${oneLine(dataset.name)}" (${oneLine(id)}) of ${graphLabel(client, graph)} with its ${items}? The next save of its workflow test makes a new dataset.`;
+        },
+      });
+      if (refused) return refused;
+      return run(client, "lbb_evals_delete", detail, () => datasets.delete(id));
+    },
+  );
+
+  host.register(
     "lbb_commit",
     {
-      description:
-        "Write graph facts, retract them, or label ranked results. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset; mode=search_feedback stores query/result relevance labels (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills.",
+      description: `Write graph facts, retract them, or label ranked results. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset; mode=search_feedback stores query/result relevance labels (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills. A retract asks the person to approve the links and records it removes first. ${APPROVAL_TEXT}`,
       inputSchema: {
         idempotency_key: z.string().optional(),
         mode: z.enum(["facts", "retract", "search_feedback"]).optional(),
@@ -1778,7 +2290,7 @@ export function registerLbbTools(
               relation: z.string(),
               target: z.object({ type: z.string(), name: z.string() }),
               confidence: z.number().min(0).max(1).optional(),
-              evidence: z.unknown().optional(),
+              evidence: evidenceSchema.nullish(),
               valid_time: z
                 .object({
                   start: z.string().optional(),
@@ -1792,9 +2304,7 @@ export function registerLbbTools(
             }),
           )
           .optional(),
-        entity_embeddings: z
-          .array(z.record(z.string(), z.unknown()))
-          .optional(),
+        entity_embeddings: z.array(entityEmbeddingSchema).optional(),
         entity_properties: z
           .array(z.record(z.string(), z.unknown()))
           .optional()
@@ -1847,30 +2357,48 @@ export function registerLbbTools(
           ),
         ...graphScope,
       },
-      annotations: IDEMPOTENT_WRITE,
+      // A retract removes facts, so the tool may destroy.
+      annotations: DESTRUCTIVE,
     },
-    ({
-      idempotency_key,
-      mode,
-      triplets,
-      entity_embeddings,
-      entity_properties,
-      search_feedback,
-      dry_run,
-      observed_at,
-      edge_idempotency,
-      retract_edges,
-      retract_entities,
-      graph,
-    }) =>
-      run(client, "lbb_commit", "standard", () => {
-        const commitMode =
-          mode ??
-          (search_feedback
-            ? "search_feedback"
-            : retract_edges || retract_entities
-              ? "retract"
-              : "facts");
+    async (
+      {
+        idempotency_key,
+        mode,
+        triplets,
+        entity_embeddings,
+        entity_properties,
+        search_feedback,
+        dry_run,
+        observed_at,
+        edge_idempotency,
+        retract_edges,
+        retract_entities,
+        graph,
+      },
+      extra,
+    ) => {
+      const commitMode =
+        mode ??
+        (search_feedback
+          ? "search_feedback"
+          : retract_edges || retract_entities
+            ? "retract"
+            : "facts");
+      if (
+        commitMode === "retract" &&
+        !dry_run &&
+        (retract_edges?.length || retract_entities?.length)
+      ) {
+        const refused = await host.approve(extra, {
+          message: retractMessage(
+            graphLabel(client, graph),
+            retract_edges ?? [],
+            retract_entities ?? [],
+          ),
+        });
+        if (refused) return refused;
+      }
+      return run(client, "lbb_commit", "standard", () => {
         if (dry_run && commitMode !== "facts")
           throw new Error(
             "dry_run is supported only for lbb_commit mode=facts",
@@ -1886,9 +2414,10 @@ export function registerLbbTools(
           const key =
             idempotency_key ??
             contentHashKey({ graph }, { mode: "retract", edges, entities });
-          return scoped(client, graph).retract({ edges, entities } as never, {
-            idempotencyKey: key,
-          });
+          return scoped(client, graph).retract(
+            { edges, entities },
+            { idempotencyKey: key },
+          );
         }
         if (commitMode === "search_feedback") {
           if (!search_feedback)
@@ -1902,7 +2431,12 @@ export function registerLbbTools(
               { mode: "search_feedback", search_feedback },
             );
           return scoped(client, graph).searchFeedback(
-            search_feedback as never,
+            {
+              ...search_feedback,
+              // A search's snapshot goes back as the server returned it.
+              snapshot: search_feedback.snapshot as
+                Schemas["SnapshotView"] | undefined,
+            },
             { idempotencyKey: key },
           );
         }
@@ -1911,43 +2445,72 @@ export function registerLbbTools(
             "lbb_commit facts mode cannot include search_feedback",
           );
         }
-        const payload = {
+        const payload: Schemas["TripletCommitFile"] = {
           triplets: triplets ?? [],
           entity_embeddings: entity_embeddings ?? [],
-          entity_properties: entity_properties ?? [],
+          // A flat map or the verbose list per record; the server coerces
+          // each value to its field's declared type.
+          entity_properties: (entity_properties ??
+            []) as Schemas["EntityPropertiesInput"][],
           ...(observed_at ? { observed_at } : {}),
           edge_idempotency: edge_idempotency ?? "append",
         };
         if (
-          payload.triplets.length === 0 &&
-          payload.entity_embeddings.length === 0 &&
-          payload.entity_properties.length === 0
+          !triplets?.length &&
+          !entity_embeddings?.length &&
+          !entity_properties?.length
         ) {
           throw new Error(
             "lbb_commit requires at least one triplet, entity embedding, or entity property",
           );
         }
         const key = idempotency_key ?? contentHashKey({ graph }, payload);
-        if (dry_run)
-          return scoped(client, graph).commitDryRun(payload as never);
-        return scoped(client, graph).commit(payload as never, {
+        if (dry_run) return scoped(client, graph).commitDryRun(payload);
+        return scoped(client, graph).commit(payload, {
           idempotencyKey: key,
         });
-      }),
+      });
+    },
   );
 
-  server.registerTool(
+  host.register(
     "lbb_configure",
     {
-      description:
-        "Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions; facts files graph facts for review, which accepting commits after the change, and change may be empty when facts is set), get_rewrite_profile and set_rewrite_profile (the graph's notes and up to 20 worked question-to-SPARQL examples that lbb_query mode=question reads for every question; pass the version you read as expected_version). define, evolve, publish and set_rewrite_profile support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph.",
+      description: `Manage native schema metadata. Actions: define_ontology (friendly spec with super_types), evolve_ontology (ordered edits including add_super_types), list_starters (the base ontologies crm, documents and work, each with its status on the graph: absent, partial or applied, what applying adds, and conflicts), apply_starter (add what the graph lacks of a starter in one ontology version; a relation the graph has is widened; refused with starter_conflict when the graph holds a term differently; dry_run previews), publish_schema (SHACL activation), suggest_ontology_change (file a change for a person to review instead of applying it; prefer it when the graph's owner reviews ontology changes, and list the result with lbb_inspect action=ontology_suggestions; facts files graph facts for review, which accepting commits after the change, and change may be empty when facts is set), get_rewrite_profile and set_rewrite_profile (the graph's notes and up to 20 worked question-to-SPARQL examples that lbb_query mode=question reads for every question; pass the version you read as expected_version). define, evolve, publish and set_rewrite_profile support dry_run previews. Definition/import here extracts native metadata; it does NOT store the complete RDF/OWL document as queryable graph facts. Use lbb_rdf import for full OWL and lbb_rdf update for additive INSERT DATA revisions; RDF deletions are unsupported. Publish_schema accepts unchanged ontology plus shapes; use define/evolve for native ontology changes. Publication enqueues durable conformance; a preview does not validate the whole graph. An evolve_ontology that removes (remove_entity_type, remove_relation, or narrow_relation with remove_domain or remove_range) and a publish_schema with desired_mode=reject ask the person to approve first; a dry_run does not ask. ${APPROVAL_TEXT}`,
       inputSchema: configureWireSchema,
-      annotations: MUTATING,
+      // evolve_ontology can remove types, relations and their source and
+      // target types, and a reject-mode publish refuses writes, so the
+      // tool may destroy.
+      annotations: { ...MUTATING, destructiveHint: true },
     },
-    (rawArgs) => {
+    async (rawArgs, extra) => {
       const parsed = configureInputSchema.safeParse(rawArgs);
       if (!parsed.success) return errorResult(parsed.error);
       const args = parsed.data;
+      if (args.action === "evolve_ontology" && !args.dry_run) {
+        const message = ontologyRemovalMessage(
+          graphLabel(client, args.graph),
+          args.ops,
+        );
+        if (message) {
+          const refused = await host.approve(extra, { message });
+          if (refused) return refused;
+        }
+      }
+      if (
+        args.action === "publish_schema" &&
+        !args.dry_run &&
+        args.desired_mode === "reject" &&
+        args.shapes
+      ) {
+        const refused = await host.approve(extra, {
+          message: shapesRejectMessage(
+            graphLabel(client, args.graph),
+            args.shapes,
+          ),
+        });
+        if (refused) return refused;
+      }
       return run(client, `lbb_configure.${args.action}`, "standard", () => {
         if (args.action === "define_ontology") {
           return client.withScope({ graph: args.graph }).ontologyDefine(
@@ -1958,7 +2521,7 @@ export function registerLbbTools(
               format: args.format,
               merge_default: args.merge_default,
               dry_run: args.dry_run,
-            }) as never,
+            }),
           );
         }
         if (args.action === "suggest_ontology_change") {
@@ -1972,12 +2535,12 @@ export function registerLbbTools(
             title: args.title,
             rationale: args.rationale ?? "",
             change,
-            ...(args.facts ? { facts: args.facts } : {}),
+            ...(args.facts ? { facts: suggestedFactsBody(args.facts) } : {}),
             origin: { kind: "agent", id: agent, label: agent },
             ...(args.anchor ? { anchor: args.anchor } : {}),
             ...(args.key ? { key: args.key } : {}),
             ...(args.evidence ? { evidence: args.evidence } : {}),
-          } as never);
+          });
         }
         if (args.action === "list_starters") {
           return scoped(client, args.graph).ontology.starters.list();
@@ -2011,7 +2574,7 @@ export function registerLbbTools(
             {
               ops: args.ops,
               allow_data_conflicts: args.allow_data_conflicts ?? false,
-            } as never,
+            },
             { dryRun: args.dry_run },
           );
         }
@@ -2026,7 +2589,7 @@ export function registerLbbTools(
             shapes: args.shapes,
             desired_mode: args.desired_mode,
             confirm_restrictive: args.confirm_restrictive,
-          } as never,
+          },
           { dryRun: args.dry_run },
         );
       });
