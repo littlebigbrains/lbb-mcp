@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { LbbClient, LbbError } from "@littlebigbrain/client";
+import { LbbClient, LbbError, type Schemas } from "@littlebigbrain/client";
 import {
   DEFAULT_DETAIL,
   HARD_OUTPUT_CHARS,
@@ -291,6 +291,23 @@ export function compactLimits(detail: Detail): {
   }
 }
 
+/**
+ * Items one list page asks for: `limit`, at most `most` (the route's own
+ * cap) and at most the items the detail level shows (5, 20 or 100), so the
+ * detail level never cuts the page. A page over the output budget
+ * (HARD_OUTPUT_CHARS) is cut too: `runPage` then asks the server again for
+ * the items that fit, so next_cursor continues after the last item the
+ * caller saw.
+ */
+export function pageLimit(
+  detail: string | undefined,
+  limit: number | undefined,
+  most: number,
+): number {
+  const shown = compactLimits(normalizeDetail(detail)).maxItems;
+  return Math.min(limit ?? shown, shown, most);
+}
+
 export function truncateValue(
   value: unknown,
   limits: { maxItems: number; maxString: number },
@@ -361,6 +378,87 @@ export function defaultSummary(
   return `${label}${countText}${truncated ? " [truncated]" : ""}`;
 }
 
+/** The next_cursor of a list page, kept whole: a cut cursor is no cursor. */
+function keepCursor(value: unknown, data: unknown): unknown {
+  const cursor = (value as { next_cursor?: unknown } | null)?.next_cursor;
+  return typeof cursor === "string" && data && typeof data === "object"
+    ? { ...(data as Record<string, unknown>), next_cursor: cursor }
+    : data;
+}
+
+/** The items of a list page (`{data, has_more, next_cursor}`), else undefined. */
+function pageItems(value: unknown): unknown[] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const page = value as Record<string, unknown>;
+  return Array.isArray(page.data) &&
+    ("next_cursor" in page || "has_more" in page)
+    ? page.data
+    : undefined;
+}
+
+/** Whether the envelope of `value` fits the output budget without the hard cap. */
+function fitsOutput(label: string, value: unknown, detailArg?: string) {
+  const detail = normalizeDetail(detailArg);
+  const state = { truncated: false };
+  const data = keepCursor(
+    value,
+    truncateValue(value, compactLimits(detail), state),
+  );
+  const text = JSON.stringify(
+    {
+      summary: defaultSummary(label, value, state.truncated),
+      data,
+      counts: countsFor(value),
+      truncated: state.truncated || undefined,
+      next: state.truncated ? { detail: nextDetail(detail) } : undefined,
+    },
+    null,
+    2,
+  );
+  // A margin for the fields the envelope adds beside the page.
+  return text.length <= HARD_OUTPUT_CHARS - 512;
+}
+
+/**
+ * Run a call that answers one list page. `fetch(limit)` asks the server
+ * for at most `limit` items after the call's cursor. When the page does
+ * not fit the output budget, the envelope would cut it to a few items
+ * while next_cursor points after the last item asked for; so the server
+ * is asked again for the items that fit, and next_cursor continues after
+ * the last item shown.
+ */
+export async function runPage(
+  client: LbbClient,
+  label: string,
+  detail: string | undefined,
+  limit: number,
+  fetch: (limit: number) => Promise<unknown>,
+) {
+  try {
+    let page = await fetch(limit);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const items = pageItems(page);
+      if (!items || items.length <= 1 || fitsOutput(label, page, detail)) break;
+      let lo = 1;
+      let hi = items.length - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const fits = fitsOutput(
+          label,
+          { ...(page as Record<string, unknown>), data: items.slice(0, mid) },
+          detail,
+        );
+        if (fits) lo = mid;
+        else hi = mid - 1;
+      }
+      page = await fetch(lo);
+    }
+    return toolResult(envelope(label, page, detail));
+  } catch (error) {
+    return errorResult(await enrichError(client, error));
+  }
+}
+
 export function envelope(
   label: string,
   value: unknown,
@@ -369,7 +467,10 @@ export function envelope(
 ) {
   const detail = normalizeDetail(detailArg);
   const state = { truncated: false };
-  let data = truncateValue(value, compactLimits(detail), state);
+  let data = keepCursor(
+    value,
+    truncateValue(value, compactLimits(detail), state),
+  );
   let result = {
     summary: defaultSummary(label, value, state.truncated),
     data,
@@ -385,7 +486,10 @@ export function envelope(
   if (text.length <= HARD_OUTPUT_CHARS) return result;
 
   const hardState = { truncated: true };
-  data = truncateValue(value, { maxItems: 3, maxString: 120 }, hardState);
+  data = keepCursor(
+    value,
+    truncateValue(value, { maxItems: 3, maxString: 120 }, hardState),
+  );
   result = {
     summary: `${label} [hard-capped for MCP output]`,
     data,
@@ -398,10 +502,10 @@ export function envelope(
 
   return {
     summary: `${label} [hard-capped for MCP output]`,
-    data: {
+    data: keepCursor(value, {
       note: "The response was too large for the MCP tool result. Narrow the query or request a smaller top_k.",
       preview: text.slice(0, 20_000),
-    },
+    }),
     counts: countsFor(value),
     truncated: true,
     next: { ...(next ?? {}), detail: "full" as const },
@@ -538,6 +642,16 @@ export function toolResult(value: Record<string, unknown>) {
   };
 }
 
+/** An error the tool raises itself, with its own code (`approval_declined`). */
+export class ToolError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export function errorResult(error: unknown) {
   const payload =
     error instanceof LbbError
@@ -552,7 +666,7 @@ export function errorResult(error: unknown) {
         }
       : {
           type: "tool_error",
-          code: "tool_error",
+          code: error instanceof ToolError ? error.code : "tool_error",
           message: error instanceof Error ? error.message : String(error),
           param: null,
           request_id: null,
@@ -906,7 +1020,10 @@ export async function analyze(
     }
   } else if (metric === "sparql") {
     const body = requireObject(p.sparql, "sparql");
-    const res = (await scopedClient.sparql(body as never)) as {
+    // The body is the caller's JSON; the server checks it.
+    const res = (await scopedClient.sparql(
+      body as Schemas["SparqlSelectRequest"],
+    )) as {
       groups?: {
         keys: Record<string, unknown>;
         value_keys?: Record<string, unknown>;
@@ -967,7 +1084,7 @@ export function ontologyDefineBody(p: {
   format?: string;
   merge_default?: boolean;
   dry_run?: boolean;
-}): Record<string, unknown> {
+}): Schemas["OntologyDefineRequest"] {
   if (p.source !== undefined) {
     return {
       source: p.source,
