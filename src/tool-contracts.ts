@@ -34,12 +34,6 @@ export const QUESTION_MAX_ANCHOR_CHARS = 2_000;
 export const QUESTION_MAX_TIMELINE = 200;
 export const QUESTION_MAX_TIMELINE_LABEL_CHARS = 200;
 export const READ_ONLY = { readOnlyHint: true } as const;
-export const IDEMPOTENT_WRITE = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
 export const MUTATING = {
   readOnlyHint: false,
   destructiveHint: false,
@@ -173,7 +167,9 @@ export const searchFeedbackSchema = z
     query: z.string().min(1),
     search_id: z.string().optional(),
     snapshot: z.record(z.string(), z.unknown()).optional(),
-    profile: z.string().optional(),
+    profile: z
+      .enum(["baseline", "scored_atom_v1", "graph_aware_v1", "ndcg_v1"])
+      .nullish(),
     model_id: z.string().optional(),
     labeler_id: z.string().optional(),
     labels: z
@@ -326,6 +322,36 @@ export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
         .describe(
           "Unit of an i64 or f64 field, e.g. mm, cm, kg, m2 or h. Writers that read text, such as values.extract, convert numbers to it",
         ),
+      allowed_values: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Enforced allowed values (sh:in): a commit with another value for the field is refused. For keyword, text, i64 and bool fields only",
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal("set_property_unit"),
+      property: z.string().describe("An existing i64 or f64 field, by name"),
+      unit: z
+        .string()
+        .optional()
+        .describe(
+          "The unit's symbol, as add_property takes it; omit it to clear the unit. Stored values are not converted",
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      op: z.literal("set_property_constraint"),
+      property: z.string().describe("An existing field, by name"),
+      allowed_values: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "The allowed values that later commits are checked against; empty or absent clears the constraint. Stored values are not checked again",
+        ),
     })
     .strict(),
   z
@@ -413,16 +439,58 @@ export const ontologyEvolveOpSchema = z.discriminatedUnion("op", [
     .strict(),
 ]);
 
+// The inputs below are as loose as the server: an optional field takes
+// null, and a field the server does not know passes through (the server
+// ignores it). 0.15 callers send `source_id: null` and `key: null`.
+
+/** A box on a page: 0-based page, coordinates normalized to the page (0 to 1). */
+export const regionSchema = z
+  .object({
+    page: z.number().int().nonnegative(),
+    x0: z.number().min(0).max(1),
+    y0: z.number().min(0).max(1),
+    x1: z.number().min(0).max(1),
+    y1: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+  })
+  .passthrough();
+
+/** Why a link holds: a string, or the text with its source and page box. */
+export const evidenceSchema = z.union([
+  z.string(),
+  z
+    .object({
+      text: z.string().nullish(),
+      source_id: z.string().nullish(),
+      region: regionSchema.nullish(),
+      observation_id: z.string().nullish(),
+    })
+    .passthrough(),
+]);
+
+/** A vector you computed for one record. */
+export const entityEmbeddingSchema = z
+  .object({
+    type: z.string(),
+    name: z.string(),
+    key: z.string().nullish(),
+    entity_id: z.string().nullish(),
+    model_id: z.string(),
+    vector: z.array(z.number()),
+    metric: z.enum(["cosine", "dot", "l2"]).nullish(),
+  })
+  .passthrough();
+
 const namedEntityInputSchema = z
   .object({
     type: z.string(),
     name: z.string(),
     key: z
       .string()
-      .optional()
+      .nullish()
       .describe("The record's external key, when it has one"),
   })
-  .strict();
+  .passthrough();
 
 /** Graph facts a review item proposes; accepting commits them. */
 export const suggestedFactsSchema = z
@@ -435,9 +503,8 @@ export const suggestedFactsSchema = z
             relation: z.string(),
             target: namedEntityInputSchema,
             confidence: z.number().min(0).max(1).optional(),
-            evidence: z
-              .unknown()
-              .optional()
+            evidence: evidenceSchema
+              .nullish()
               .describe(
                 "Why the link holds: a string, or { text, source_id } as lbb_commit takes it",
               ),
@@ -495,6 +562,150 @@ export const suggestedFactsSchema = z
   .describe(
     "Graph facts a person confirms: accepting commits them after the change (at most 200 triplets and property rows together). Records graphs only",
   );
+
+/** The facts as the API takes them. */
+export function suggestedFactsBody(
+  facts: z.infer<typeof suggestedFactsSchema>,
+): Schemas["SuggestedFacts"] {
+  return {
+    ...facts,
+    // Rows pass through as lbb_commit takes them; the server coerces each
+    // value to its field's declared type.
+    entity_properties: facts.entity_properties as
+      Schemas["EntityPropertiesInput"][] | undefined,
+  };
+}
+
+/** A person's answer to a review item, or to one value of a workflow test. */
+export const reviewAnswerSchema = z
+  .object({
+    decision: z
+      .enum(["accept", "reject", "correct", "choose", "cant_tell"])
+      .describe(
+        "accept, reject, correct (with value), choose (with option) or cant_tell",
+      ),
+    value: z
+      .union([z.number(), z.string(), z.boolean()])
+      .optional()
+      .describe(
+        "correct: the right value, in the property's type. A number may name its unit, e.g. 450 mm",
+      ),
+    option: z
+      .string()
+      .optional()
+      .describe("choose: the id of the chosen option or grade"),
+    note: z
+      .string()
+      .max(1000)
+      .optional()
+      .describe(
+        "Why, in a few words; for an answer item, the answer text. At most 1,000 characters",
+      ),
+  })
+  .strict();
+
+/** A workflow to test before it exists: the create request of a values.extract workflow. */
+export const testInstallSchema = z
+  .object({
+    starter: z.string().describe("The starter workflow, values.extract"),
+    name: z
+      .string()
+      .optional()
+      .describe(
+        "The name the workflow would get; default the class's local name",
+      ),
+    watch: z
+      .object({
+        class: z.string().describe("The class whose instances it reads"),
+        fields: z
+          .array(z.string())
+          .optional()
+          .describe("The fields that hold the text, as embedding paths"),
+        exclude: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+    params: jsonObjectSchema
+      .optional()
+      .describe(
+        "The starter workflow's settings, as its catalog entry lists them (the properties to fill, the context)",
+      ),
+    gate: z
+      .object({
+        below: z
+          .number()
+          .min(0)
+          .max(1)
+          .describe("Values below this support go to review"),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+/** One label of `lbb_evals action=label`: a result and whether it answers the request. */
+export const evalLabelItemSchema = z
+  .object({
+    id: z.string(),
+    valid: z.boolean(),
+    note: z.string().optional(),
+  })
+  .strict();
+
+/** A value a correct run writes, or, in leave_out, one it must not write. */
+const evalExpectedValueSchema = z
+  .object({
+    property: z.string(),
+    value: z
+      .union([z.number(), z.string(), z.boolean(), z.null()])
+      .describe(
+        "Numbers compare as numbers, text in lower case. In leave_out, null means no value at all",
+      ),
+    accept: z
+      .array(z.string())
+      .optional()
+      .describe("Other spellings a text value may take, lower case"),
+    stated: z
+      .string()
+      .optional()
+      .describe("The number and unit as the text states them, e.g. 450 mm"),
+    quote: z
+      .string()
+      .optional()
+      .describe("Words of the text that state the value"),
+    reason: z.string().optional().describe("Why a value is left out"),
+  })
+  .strict();
+
+/** One example of a values dataset. */
+export const evalDatasetItemSchema = z
+  .object({
+    name: z
+      .string()
+      .describe(
+        "The input's name, unique in the dataset; the same name replaces",
+      ),
+    text: z
+      .string()
+      .max(40_000)
+      .optional()
+      .describe("The input text, at most 40,000 characters"),
+    values: z.array(evalExpectedValueSchema).optional(),
+    leave_out: z.array(evalExpectedValueSchema).optional(),
+    iri: z.string().optional().describe("The instance the input came from"),
+    case: z
+      .string()
+      .optional()
+      .describe("What the example shows, in one sentence"),
+    source: z
+      .object({
+        kind: z.enum(["test", "review", "answer_key"]),
+        id: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 export const inspectInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("guide"), ...readScope }).strict(),
@@ -591,10 +802,7 @@ const comparePointSchema = z
   })
   .strict();
 
-export const queryInputSchema: z.ZodDiscriminatedUnion<
-  "mode",
-  z.AnyZodObject[]
-> = z.discriminatedUnion("mode", [
+export const queryInputSchema = z.discriminatedUnion("mode", [
   z
     .object({
       mode: z.literal("structured"),
@@ -1152,9 +1360,9 @@ export const configureInputSchema = z.discriminatedUnion("action", [
  */
 export function advertiseUnion(
   discriminator: string,
-  union: z.ZodDiscriminatedUnion<string, z.AnyZodObject[]>,
+  union: z.ZodDiscriminatedUnion<readonly z.ZodObject[]>,
 ) {
-  const merged: z.ZodRawShape = {};
+  const merged: Record<string, z.ZodType> = {};
   const variants: string[] = [];
   for (const option of union.options) {
     for (const [key, field] of Object.entries(option.shape as z.ZodRawShape)) {

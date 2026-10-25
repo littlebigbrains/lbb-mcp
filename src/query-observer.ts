@@ -20,7 +20,47 @@ export interface McpQueryStageEvent {
   text_bytes?: number;
 }
 
+/** What the approval step of a destructive call decided. */
+export type McpApprovalDecision =
+  /** The person ticked the box. */
+  | "approved"
+  /** The person declined, or left the box unticked. */
+  | "declined"
+  | "cancelled"
+  /** The approval request itself failed. */
+  | "failed"
+  /** The client cannot show the question, so the call was refused. */
+  | "unavailable"
+  /** The client cannot show the question; LBB_MCP_DESTRUCTIVE=allow let it run. */
+  | "allowed_by_setting";
+
+/**
+ * One tool call, for the server's log. It holds no arguments, texts or
+ * keys: the tool, its action, the outcome and the JSON-RPC request id.
+ */
+export interface McpToolCallEvent {
+  event: "mcp_tool_call";
+  tool: string;
+  /** The call's `action` (or `mode`), when it names one. */
+  action?: string;
+  outcome: "ok" | "error";
+  /** The error code of a failed call, for example approval_declined. */
+  code?: string;
+  /** What the approval step decided, when the call is destructive. */
+  approval?: McpApprovalDecision;
+  request_id: string | number;
+}
+
 export interface LbbServerOptions {
+  /**
+   * A destructive call when the client cannot ask the person (no MCP form
+   * elicitation): "refuse" returns approval_required and sends nothing;
+   * "allow" sends it without a question. Default: "allow" when the
+   * environment sets LBB_MCP_DESTRUCTIVE=allow, else "refuse".
+   */
+  destructiveWithoutApproval?: "refuse" | "allow";
+  /** Receives one event per tool call. Default: a JSON line on stderr. */
+  log?: (event: Readonly<McpToolCallEvent>) => void;
   /** Query text only; fitting and rendering always use this same format. */
   queryTextFormat?: "compact" | "pretty";
   timing?: {

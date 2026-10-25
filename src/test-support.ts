@@ -1,5 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import {
+  ElicitRequestSchema,
+  type ElicitRequest,
+  type ElicitResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import { LbbClient, type FetchLike } from "@littlebigbrain/client";
 import { buildLbbServer } from "./server.js";
 import type { LbbServerOptions } from "./query-observer.js";
@@ -13,9 +18,22 @@ export type Call = {
   };
 };
 
+/** A test client that shows forms: it answers each elicitation request. */
+export type Elicit = (
+  params: ElicitRequest["params"],
+) => ElicitResult | Promise<ElicitResult>;
+
+/**
+ * A server on a fake fetch, and a client. With `elicit` the client shows
+ * forms (`elicitation` names its modes otherwise, for example `{ url: {} }`
+ * for a client that only opens links). The server's log is silent and it
+ * refuses destructive calls it cannot ask about, unless `options` say else.
+ */
 export async function connect(
   fetch: FetchLike,
   options?: LbbServerOptions,
+  elicit?: Elicit,
+  elicitation: Record<string, object> = {},
 ): Promise<Client> {
   const lbb = new LbbClient({
     baseUrl: "http://h",
@@ -24,10 +42,22 @@ export async function connect(
     fetch,
     retryDelayMs: 0,
   });
-  const server = buildLbbServer(lbb, options);
+  const server = buildLbbServer(lbb, {
+    log: () => {},
+    destructiveWithoutApproval: "refuse",
+    ...options,
+  });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test", version: "0" });
+  const client = new Client(
+    { name: "test", version: "0" },
+    elicit ? { capabilities: { elicitation } } : undefined,
+  );
+  if (elicit) {
+    client.setRequestHandler(ElicitRequestSchema, (request) =>
+      elicit(request.params),
+    );
+  }
   await Promise.all([
     server.connect(serverTransport),
     client.connect(clientTransport),
@@ -74,4 +104,25 @@ export function canonicalize(value: unknown): unknown {
     );
   }
   return value;
+}
+
+/** One request the fake fetch saw, parsed. */
+export type Sent = {
+  method: string;
+  path: string;
+  query: Record<string, string>;
+  body: unknown;
+  key: string | undefined;
+};
+
+/** The method, path, query, JSON body and idempotency key of one request. */
+export function sent(call: Call): Sent {
+  const url = new URL(call.input);
+  return {
+    method: call.init.method ?? "GET",
+    path: url.pathname,
+    query: Object.fromEntries(url.searchParams),
+    body: call.init.body === undefined ? undefined : JSON.parse(call.init.body),
+    key: call.init.headers?.["idempotency-key"],
+  };
 }
