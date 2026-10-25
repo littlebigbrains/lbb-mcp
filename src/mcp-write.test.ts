@@ -151,6 +151,52 @@ test("lbb_configure evolve_ontology carries rename and set-metadata ops", async 
   await client.close();
 });
 
+test("lbb_configure evolve_ontology carries the property unit and constraint ops", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ ontology_version: 2, applied: [], messages: [] });
+  });
+  try {
+    const ops = [
+      {
+        op: "add_property",
+        name: "status",
+        value_type: "keyword",
+        allowed_values: ["open", "done"],
+      },
+      { op: "add_property", name: "width", value_type: "f64", unit: "cm" },
+      { op: "set_property_unit", property: "width", unit: "mm" },
+      { op: "set_property_unit", property: "depth" },
+      {
+        op: "set_property_constraint",
+        property: "stage",
+        allowed_values: ["lead", "won"],
+      },
+      { op: "set_property_constraint", property: "kind", allowed_values: [] },
+    ];
+    const result = await client.callTool({
+      name: "lbb_configure",
+      arguments: { action: "evolve_ontology", graph: "crm", ops },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.match(calls[0].input, /\/v1\/ontology\/evolve\?/);
+    assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}").ops, ops);
+
+    const unknownField = await client.callTool({
+      name: "lbb_configure",
+      arguments: {
+        action: "evolve_ontology",
+        ops: [{ op: "set_property_unit", name: "width", unit: "mm" }],
+      },
+    });
+    assert.equal(unknownField.isError, true);
+    assert.equal(calls.length, 1, "a malformed op sends nothing");
+  } finally {
+    await client.close();
+  }
+});
+
 test("lbb_configure evolve_ontology carries subtractive ops and the conflict override", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -162,7 +208,8 @@ test("lbb_configure evolve_ontology carries subtractive ops and the conflict ove
       messages: [],
     });
   };
-  const client = await connect(fetch);
+  // LBB_MCP_DESTRUCTIVE=allow: the removals go through without a question.
+  const client = await connect(fetch, { destructiveWithoutApproval: "allow" });
 
   await client.callTool({
     name: "lbb_configure",
@@ -282,7 +329,8 @@ test("lbb_commit mode=retract removes facts via the retract route", async () => 
     calls.push({ input, init: init ?? {} });
     return ok({ retracted_edges: 0, retracted_entities: 1, commit_seq: 3 });
   };
-  const client = await connect(fetch);
+  // LBB_MCP_DESTRUCTIVE=allow: the retract goes through without a question.
+  const client = await connect(fetch, { destructiveWithoutApproval: "allow" });
   await client.callTool({
     name: "lbb_commit",
     arguments: {
@@ -890,6 +938,53 @@ test("lbb_evals review_check refuses an incomplete review before any request", a
   await client.close();
 });
 
+test("lbb_model_choice_manage sets and removes a model choice", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ id: "mch_1", object: "model_choice", use: "extract" });
+  };
+  const client = await connect(fetch);
+
+  const chosen = await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: {
+      action: "put_choice",
+      use: "extract",
+      provider: "anthropic",
+      model: "claude-haiku-5-5",
+      effort: "low",
+      workflow: "products",
+    },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "delete_choice", use: "decide", graph: "crm" },
+  });
+  const noModel = await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "put_choice", use: "extract" },
+  });
+
+  assert.notEqual(chosen.isError, true);
+  assert.equal(noModel.isError, true);
+  assert.deepEqual(
+    calls.map((call) => {
+      const url = new URL(call.input);
+      return `${call.init.method} ${url.pathname}?${url.searchParams}`;
+    }),
+    [
+      "PUT /v1/models/choices?graph=g",
+      "DELETE /v1/models/choices?graph=crm&use=decide",
+    ],
+  );
+  assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
+    use: "extract",
+    model: { provider: "anthropic", model: "claude-haiku-5-5", effort: "low" },
+    workflow: "products",
+  });
+});
+
 test("lbb_model_choice_manage starts, stops, switches and reverts", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -951,4 +1046,118 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
   });
   assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), { trial: "t1" });
   await client.close();
+});
+
+test("0.15.1-shaped inputs still pass: null optional fields and fields the server ignores", async () => {
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ commit_seq: 1 });
+  });
+  try {
+    const committed = await client.callTool({
+      name: "lbb_commit",
+      arguments: {
+        triplets: [
+          {
+            source: { type: "Organization", name: "Acme" },
+            relation: "HAS_CATEGORY",
+            target: { type: "Category", name: "Fintech" },
+            evidence: {
+              text: "Acme is a fintech.",
+              source_id: null,
+              observation_id: null,
+              region: null,
+              page_hint: 3,
+            },
+          },
+          {
+            source: { type: "Organization", name: "Beta" },
+            relation: "HAS_CATEGORY",
+            target: { type: "Category", name: "Fintech" },
+            evidence: null,
+          },
+        ],
+        entity_embeddings: [
+          {
+            type: "Organization",
+            name: "Acme",
+            key: null,
+            entity_id: null,
+            metric: null,
+            model_id: "m",
+            vector: [0.1, 0.2],
+            normalized: true,
+          },
+        ],
+      },
+    });
+    assert.notEqual(committed.isError, true, JSON.stringify(committed));
+    const body = JSON.parse(calls[0].init.body ?? "{}");
+    // Nulls and fields the server does not know go to it as sent; it
+    // ignores those fields.
+    assert.deepEqual(body.triplets[0].evidence, {
+      text: "Acme is a fintech.",
+      source_id: null,
+      observation_id: null,
+      region: null,
+      page_hint: 3,
+    });
+    assert.equal(body.triplets[1].evidence, null);
+    assert.deepEqual(body.entity_embeddings[0], {
+      type: "Organization",
+      name: "Acme",
+      key: null,
+      entity_id: null,
+      metric: null,
+      model_id: "m",
+      vector: [0.1, 0.2],
+      normalized: true,
+    });
+
+    const feedback = await client.callTool({
+      name: "lbb_commit",
+      arguments: {
+        mode: "search_feedback",
+        search_feedback: {
+          query: "fintech",
+          profile: null,
+          labels: [
+            {
+              target: {
+                kind: "entity",
+                entity: { entity_type: "Organization", name: "Acme" },
+              },
+              grade: 3,
+            },
+          ],
+        },
+      },
+    });
+    assert.notEqual(feedback.isError, true, JSON.stringify(feedback));
+
+    const suggested = await client.callTool({
+      name: "lbb_configure",
+      arguments: {
+        action: "suggest_ontology_change",
+        title: "Add Fintech facts",
+        facts: {
+          triplets: [
+            {
+              source: { type: "Organization", name: "Acme", key: null },
+              relation: "HAS_CATEGORY",
+              target: { type: "Category", name: "Fintech", key: null },
+              evidence: { text: "Acme is a fintech.", source_id: null },
+            },
+          ],
+        },
+      },
+    });
+    assert.notEqual(suggested.isError, true, JSON.stringify(suggested));
+    const facts = JSON.parse(calls.at(-1)?.init.body ?? "{}").facts;
+    assert.equal(facts.triplets[0].source.key, null);
+    assert.equal(facts.triplets[0].evidence.source_id, null);
+  } finally {
+    await client.close();
+  }
 });
