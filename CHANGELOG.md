@@ -2,6 +2,17 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- `lbb_model_choice_manage` `put_choice` and `lbb_workflows_manage`
+  `activate` take `experiment` (`exp_…`): the write applies that
+  experiment's B, and the server refuses it with `experiment_outdated`
+  when the workflow no longer runs the experiment's A. Neither asks for
+  approval, as before. The tool contract digest changes with the new
+  argument. Use `experiment` only after every node runs the version with
+  experiments: an earlier node ignores it on an activation and skips the
+  check of A.
+
 ## 0.16.0 (2026-10-26)
 
 - `lbb_inspect action=entity` accepts full RDF IRIs and the opt-in `records/1` view, with exact terms, separate assertions, schema guards and snapshot pins. Complete records exceeding the output budget fail explicitly instead of being compacted. It uses `entities.retrieve` of client 0.31.0.

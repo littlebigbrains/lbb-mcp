@@ -965,6 +965,17 @@ test("lbb_model_choice_manage sets and removes a model choice", async () => {
     name: "lbb_model_choice_manage",
     arguments: { action: "put_choice", use: "extract" },
   });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: {
+      action: "put_choice",
+      use: "extract",
+      provider: "mock",
+      model: "mock-candidate",
+      workflow: "products",
+      experiment: "exp_1791967648726a1b2c3d4e5f6",
+    },
+  });
 
   assert.notEqual(chosen.isError, true);
   assert.equal(noModel.isError, true);
@@ -976,12 +987,20 @@ test("lbb_model_choice_manage sets and removes a model choice", async () => {
     [
       "PUT /v1/models/choices?graph=g",
       "DELETE /v1/models/choices?graph=crm&use=decide",
+      "PUT /v1/models/choices?graph=g",
     ],
   );
   assert.deepEqual(JSON.parse(calls[0].init.body ?? "{}"), {
     use: "extract",
     model: { provider: "anthropic", model: "claude-haiku-5-5", effort: "low" },
     workflow: "products",
+  });
+  // A choice that applies an experiment's B names the experiment.
+  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), {
+    use: "extract",
+    model: { provider: "mock", model: "mock-candidate" },
+    workflow: "products",
+    experiment: "exp_1791967648726a1b2c3d4e5f6",
   });
 });
 
