@@ -3,6 +3,93 @@ import assert from "node:assert/strict";
 import { type FetchLike, type Schemas } from "@littlebigbrain/client";
 import { connect, ok, payload, type Call } from "./test-support.js";
 
+test("record inspection refuses an older server's legacy success envelope", async () => {
+  const client = await connect(async () =>
+    ok({ entity: { id: "legacy-id" }, attributes: {} }),
+  );
+  try {
+    const result = await client.callTool({
+      name: "lbb_inspect",
+      arguments: {
+        action: "entity",
+        version: "records/1",
+        entity_id: "legacy-id",
+      },
+    });
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /upgrade the server/);
+  } finally {
+    await client.close();
+  }
+});
+
+test("record inspection preserves complete RDF terms even at compact detail", async () => {
+  const calls: Call[] = [];
+  const record = {
+    object: "record",
+    version: "records/1",
+    id: "https://example.org/alice",
+    properties: [
+      {
+        subject: { "@id": "https://example.org/alice" },
+        predicate: "https://example.org/evidence",
+        object: { "@value": "évidence ".repeat(500), "@language": "fr" },
+      },
+    ],
+    assertions: Array.from({ length: 25 }, (_, i) => ({
+      id: { "@id": `https://example.org/claim/${i}` },
+      statements: [],
+    })),
+    complete: true,
+  };
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok(record);
+  });
+  try {
+    const result = await client.callTool({
+      name: "lbb_inspect",
+      arguments: {
+        action: "entity",
+        iri: record.id,
+        as_of_commit_seq: 7,
+        detail: "compact",
+      },
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual(payload(result).data, record);
+    const sent = new URL(calls.at(-1)?.input ?? "");
+    assert.equal(sent.searchParams.get("version"), "records/1");
+    assert.equal(sent.searchParams.get("iri"), record.id);
+    assert.equal(sent.searchParams.get("as_of_commit_seq"), "7");
+  } finally {
+    await client.close();
+  }
+});
+
+test("record inspection refuses an oversized output instead of shortening evidence", async () => {
+  const client = await connect(async () =>
+    ok({
+      object: "record",
+      version: "records/1",
+      id: "https://example.org/alice",
+      properties: [{ "@value": "é".repeat(50_000) }],
+      complete: true,
+    }),
+  );
+  try {
+    const result = await client.callTool({
+      name: "lbb_inspect",
+      arguments: { action: "entity", iri: "https://example.org/alice" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /record_read_limit/);
+    assert.doesNotMatch(JSON.stringify(result), /é{100}/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("SPARQL text requests match the API contract with default and explicit commit pins", async () => {
   // Pin the HTTP request keys against the generated API contract, including in
   // the standalone MCP repository where the monorepo's OpenAPI file is absent.
@@ -1388,10 +1475,14 @@ test("byte-bounded query pages preserve every long Unicode value at nonzero offs
 
 test("search tools route to the embeddings and search API", async () => {
   const calls: Call[] = [];
-  const client = await connect(async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({ embeddings: [], hits: [] });
-  });
+  // LBB_MCP_DESTRUCTIVE=allow: a delete goes through without a question.
+  const client = await connect(
+    async (input, init) => {
+      calls.push({ input, init: init ?? {} });
+      return ok({ embeddings: [], hits: [] });
+    },
+    { destructiveWithoutApproval: "allow" },
+  );
   const last = () => {
     const call = calls.at(-1);
     return {
@@ -1475,20 +1566,13 @@ test("search tools route to the embeddings and search API", async () => {
     });
     assert.equal(noModel.isError, true);
 
-    // Delete asks for the name twice.
-    const before = calls.length;
-    const mismatch = await client.callTool({
-      name: "lbb_embeddings_delete",
-      arguments: { name: "service", confirm: "other" },
-    });
-    assert.equal(mismatch.isError, true);
-    assert.equal(calls.length, before, "no request without the confirmation");
+    // The client repeats the name to the server.
     await client.callTool({
       name: "lbb_embeddings_delete",
-      arguments: { name: "service", confirm: "service" },
+      arguments: { name: "service" },
     });
     assert.equal(last().method, "DELETE");
-    assert.match(last().url, /confirm=service/);
+    assert.match(last().url, /name=service&confirm=service/);
 
     // Search with one filter list and a plan.
     await client.callTool({
@@ -1524,10 +1608,14 @@ test("search tools route to the embeddings and search API", async () => {
 
 test("fit source tools route to the fit-sources API", async () => {
   const calls: Call[] = [];
-  const client = await connect(async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({ fit_sources: [] });
-  });
+  // LBB_MCP_DESTRUCTIVE=allow: a delete goes through without a question.
+  const client = await connect(
+    async (input, init) => {
+      calls.push({ input, init: init ?? {} });
+      return ok({ fit_sources: [] });
+    },
+    { destructiveWithoutApproval: "allow" },
+  );
   const last = () => {
     const call = calls.at(-1);
     return {
@@ -1587,20 +1675,13 @@ test("fit source tools route to the fit-sources API", async () => {
     });
     assert.equal(noClass.isError, true);
 
-    // Delete asks for the name twice.
-    const before = calls.length;
-    const mismatch = await client.callTool({
-      name: "lbb_fit_sources_delete",
-      arguments: { name: "interview", confirm: "other" },
-    });
-    assert.equal(mismatch.isError, true);
-    assert.equal(calls.length, before, "no request without the confirmation");
+    // The client repeats the name to the server.
     await client.callTool({
       name: "lbb_fit_sources_delete",
-      arguments: { name: "interview", confirm: "interview" },
+      arguments: { name: "interview" },
     });
     assert.equal(last().method, "DELETE");
-    assert.match(last().url, /confirm=interview/);
+    assert.match(last().url, /name=interview&confirm=interview/);
   } finally {
     await client.close();
   }
@@ -1608,10 +1689,14 @@ test("fit source tools route to the fit-sources API", async () => {
 
 test("workflow tools route to the starter and triggered workflow API", async () => {
   const calls: Call[] = [];
-  const client = await connect(async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({ starters: [] });
-  });
+  // LBB_MCP_DESTRUCTIVE=allow: a delete goes through without a question.
+  const client = await connect(
+    async (input, init) => {
+      calls.push({ input, init: init ?? {} });
+      return ok({ starters: [] });
+    },
+    { destructiveWithoutApproval: "allow" },
+  );
   const last = () => {
     const call = calls.at(-1);
     return {
@@ -1664,6 +1749,47 @@ test("workflow tools route to the starter and triggered workflow API", async () 
       sample: 2,
     });
     assert.equal("propose" in last().body, false, "a read never runs models");
+
+    // The history of a workflow's settings, one revision, and an activation.
+    const id = "wrev_00000000000000000000000000000001";
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "revisions", name: "sinks", limit: 5 },
+    });
+    assert.equal(last().method, "GET");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\/revisions\?.*name=sinks&limit=5/,
+    );
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "revision", name: "sinks", revision: id },
+    });
+    assert.match(
+      last().url,
+      new RegExp(`/v1/workflows/named/revisions/get\\?.*name=sinks&id=${id}`),
+    );
+    const noRevision = await client.callTool({
+      name: "lbb_workflows",
+      arguments: { action: "revision", name: "sinks" },
+    });
+    assert.equal(noRevision.isError, true);
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "activate",
+        name: "sinks",
+        revision: id,
+        expected_revision: "wrev_00000000000000000000000000000002",
+      },
+    });
+    assert.equal(last().method, "POST");
+    assert.match(last().url, /\/v1\/workflows\/named\/revisions\/activate\?/);
+    assert.deepEqual(last().body, {
+      name: "sinks",
+      id,
+      expected_revision: "wrev_00000000000000000000000000000002",
+    });
 
     // Manage: use and refresh.
     await client.callTool({
@@ -1720,24 +1846,10 @@ test("workflow tools route to the starter and triggered workflow API", async () 
     assert.equal(noRefreshName.isError, true);
     assert.equal(calls.length, before, "no request for an incomplete call");
 
-    // Delete asks for the name twice.
-    const mismatch = await client.callTool({
-      name: "lbb_workflows_delete",
-      arguments: {
-        starter: "ontology.fit",
-        name: "interview",
-        confirm: "other",
-      },
-    });
-    assert.equal(mismatch.isError, true);
-    assert.equal(calls.length, before, "no request without the confirmation");
+    // The client repeats the name to the server.
     await client.callTool({
       name: "lbb_workflows_delete",
-      arguments: {
-        starter: "ontology.fit",
-        name: "interview",
-        confirm: "interview",
-      },
+      arguments: { starter: "ontology.fit", name: "interview" },
     });
     assert.equal(last().method, "DELETE");
     assert.match(last().url, /\/v1\/workflows\/triggered\?/);
@@ -1752,10 +1864,14 @@ test("workflow tools route to the starter and triggered workflow API", async () 
 
 test("a workflow with triggers is defined, read with its queue, run, paused and deleted by name", async () => {
   const calls: Call[] = [];
-  const client = await connect(async (input, init) => {
-    calls.push({ input, init: init ?? {} });
-    return ok({ name: "notes" });
-  });
+  // LBB_MCP_DESTRUCTIVE=allow: a delete goes through without a question.
+  const client = await connect(
+    async (input, init) => {
+      calls.push({ input, init: init ?? {} });
+      return ok({ name: "notes" });
+    },
+    { destructiveWithoutApproval: "allow" },
+  );
   const last = () => {
     const call = calls.at(-1);
     return {
@@ -1806,17 +1922,49 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
     assert.doesNotMatch(last().url, /name=/);
     await client.callTool({
       name: "lbb_workflows",
+      arguments: { action: "workflows", cursor: "notes", limit: 20 },
+    });
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\?.*limit=20&cursor=notes$/,
+    );
+    await client.callTool({
+      name: "lbb_workflows",
       arguments: { action: "workflows", name: "notes" },
     });
     assert.match(last().url, /\/v1\/workflows\/named\?.*name=notes$/);
     await client.callTool({
       name: "lbb_workflows",
-      arguments: { action: "queue", name: "notes", after: 50, limit: 10 },
+      arguments: {
+        action: "queue",
+        name: "notes",
+        cursor: "50",
+        limit: 10,
+        detail: "standard",
+      },
     });
     assert.equal(last().method, "GET");
     assert.match(
       last().url,
-      /\/v1\/workflows\/named\/queue\?.*name=notes&after=50&limit=10$/,
+      /\/v1\/workflows\/named\/queue\?.*name=notes&cursor=50&limit=10$/,
+    );
+    // What the runs did with each input: one run, some outcomes, a page.
+    await client.callTool({
+      name: "lbb_workflows",
+      arguments: {
+        action: "run_results",
+        name: "notes",
+        run: "1791967648726-starter.notes-3",
+        outcome: ["review", "failed"],
+        cursor: "2:1791967648726-starter.notes-3",
+        limit: 20,
+        detail: "full",
+      },
+    });
+    assert.equal(last().method, "GET");
+    assert.match(
+      last().url,
+      /\/v1\/workflows\/named\/runs\/results\?.*name=notes&run=1791967648726-starter\.notes-3&outcome=review%2Cfailed&cursor=2%3A1791967648726-starter\.notes-3&limit=20$/,
     );
     await client.callTool({
       name: "lbb_workflows_manage",
@@ -1832,7 +1980,7 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
     assert.deepEqual(last().body, { paused: true });
     await client.callTool({
       name: "lbb_workflows_delete",
-      arguments: { name: "notes", confirm: "notes" },
+      arguments: { name: "notes" },
     });
     assert.equal(last().method, "DELETE");
     assert.match(
@@ -1840,7 +1988,76 @@ test("a workflow with triggers is defined, read with its queue, run, paused and 
       /\/v1\/workflows\/named\?.*name=notes&confirm=notes$/,
     );
 
+    // A schedule or a content trigger in place of the watch.
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "digest",
+        workflow: { workflow_type: "digest", version: "v1" },
+        trigger: "nightly",
+        schedule: { cron: "0 3 * * 1-5", timezone: "Europe/Berlin" },
+      },
+    });
+    assert.equal(last().method, "PUT");
+    assert.deepEqual(last().body, {
+      name: "digest",
+      workflow: { workflow_type: "digest", version: "v1" },
+      triggers: [
+        {
+          id: "nightly",
+          schedule: { cron: "0 3 * * 1-5", timezone: "Europe/Berlin" },
+        },
+      ],
+    });
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "pdfs",
+        workflow: { workflow_type: "parse", version: "v1" },
+        media_types: ["application/pdf"],
+        shards: 2,
+      },
+    });
+    assert.deepEqual(last().body, {
+      name: "pdfs",
+      workflow: { workflow_type: "parse", version: "v1" },
+      triggers: [{ content: { media_types: ["application/pdf"] } }],
+      shards: 2,
+    });
+
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "orders",
+        workflow: { workflow_type: "orders", version: "v1" },
+        stream: { max_wait: "30s" },
+        shards: 4,
+        batch: 200,
+      },
+    });
+    assert.deepEqual(last().body, {
+      name: "orders",
+      workflow: { workflow_type: "orders", version: "v1" },
+      triggers: [{ stream: { max_wait: "30s" } }],
+      batch: 200,
+      shards: 4,
+    });
+
     const before = calls.length;
+    const twoTriggers = await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "define",
+        name: "digest",
+        class: "Note",
+        workflow: { workflow_type: "digest", version: "v1" },
+        schedule: { every: "1h" },
+      },
+    });
+    assert.equal(twoTriggers.isError, true);
     const noQueueName = await client.callTool({
       name: "lbb_workflows",
       arguments: { action: "queue" },
@@ -2022,6 +2239,48 @@ test("lbb_query mode=search honours detail: full returns every hit and its whole
   } finally {
     await client.close();
   }
+});
+
+test("lbb_model_choice reads the model choices of the workflow uses", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ object: "list", data: [], has_more: false });
+  };
+  const client = await connect(fetch);
+
+  const all = await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "choices" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice",
+    arguments: {
+      action: "choices",
+      workflow: "products",
+      use: "extract",
+      cursor: "mch_1",
+      limit: 10,
+      graph: "crm",
+    },
+  });
+  const wrongUse = await client.callTool({
+    name: "lbb_model_choice",
+    arguments: { action: "choices", use: "ask" },
+  });
+
+  assert.notEqual(all.isError, true);
+  assert.equal(wrongUse.isError, true);
+  assert.deepEqual(
+    calls.map((call) => {
+      const url = new URL(call.input);
+      return `${call.init.method ?? "GET"} ${url.pathname}?${url.searchParams}`;
+    }),
+    [
+      "GET /v1/models/choices?graph=g",
+      "GET /v1/models/choices?graph=crm&workflow=products&use=extract&limit=10&cursor=mch_1",
+    ],
+  );
 });
 
 test("lbb_model_choice reads the options, the trials and the switches", async () => {

@@ -83,7 +83,35 @@ jobs:
           client_range=$(node -p "require('./package.json').dependencies['@littlebigbrain/client']")
           npm view "@littlebigbrain/client@${client_range}" version
       - name: Publish @littlebigbrain/mcp
-        run: npm publish
+        # Two syncs can queue two runs of one version at the gate. When npm
+        # refuses this version as already published or staged, the step checks
+        # that the exact version is live; so does a publish. Only a live version
+        # passes, so github-release never tags a version that npm lacks.
+        env:
+          EXPECTED_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set +e
+          set -uo pipefail
+          package="@littlebigbrain/mcp@${EXPECTED_VERSION:?}"
+          live() { [ "$(npm view "$package" version 2>/dev/null)" = "$EXPECTED_VERSION" ]; }
+          if live; then
+            echo "$package is already on npm; skipped"
+            exit 0
+          fi
+          npm publish 2>&1 | tee "$RUNNER_TEMP/publish.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -qE 'code (E409|EPUBLISHCONFLICT)|[Cc]annot publish over' "$RUNNER_TEMP/publish.log" \
+              || exit "$status"
+            echo "::warning::npm refused $package as already published or staged"
+          fi
+          for attempt in $(seq 1 20); do
+            live && { echo "$package is on npm"; exit 0; }
+            echo "$package is not on npm yet (attempt $attempt/20)"
+            sleep 15
+          done
+          echo "::error::$package is not on npm after 5 minutes"
+          exit 1
 
   github-release:
     needs: [preflight, publish-npm]
