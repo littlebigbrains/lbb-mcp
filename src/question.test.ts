@@ -4,6 +4,7 @@ import { Buffer } from "node:buffer";
 import { type FetchLike } from "@littlebigbrain/client";
 import { ProgressNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { connect, ok, payload, type Call } from "./test-support.js";
+import { QUESTION_MAX_ANCHORS, queryInputSchema } from "./tool-contracts.js";
 
 const SPARQL =
   "SELECT ?name WHERE { ?s a <https://littlebigbrain.com/class/service> ; <http://www.w3.org/2000/01/rdf-schema#label> ?name }";
@@ -14,6 +15,34 @@ const ANSWER = {
 };
 
 const CHART = { kind: "table", x: "name" };
+
+test("question rejects oversized anchors before validating their entries", () => {
+  let entriesRead = 0;
+  const anchor = Array.from({ length: QUESTION_MAX_ANCHORS + 1 }, () => null);
+  Object.defineProperty(anchor, 0, {
+    get: () => {
+      entriesRead++;
+      return null;
+    },
+  });
+
+  const parsed = queryInputSchema.safeParse({
+    mode: "question",
+    question: "Which services exist?",
+    anchor,
+  });
+  assert.equal(parsed.success, false);
+  assert.ok(!parsed.success);
+  assert.deepEqual(
+    parsed.error.issues.map(({ code, path }) => ({ code, path })),
+    [{ code: "too_big", path: ["anchor"] }],
+  );
+  assert.equal(
+    entriesRead,
+    0,
+    "oversized input must not accumulate item errors",
+  );
+});
 
 function asked(overrides: Record<string, unknown> = {}) {
   return {
