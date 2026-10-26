@@ -67,6 +67,11 @@ The client starts the server and communicates through standard input and output
 (stdio). Keep the key in your local configuration. Set `LBB_GRAPH` to change
 the default graph from `main`.
 
+A call that deletes or removes data asks you to approve it in the client. A
+client that cannot show the question gets the error `approval_required`, and
+nothing is sent. Set `LBB_MCP_DESTRUCTIVE=allow` in the server's environment
+to run such calls without a question.
+
 ## Run a first query
 
 This example stores three facts in a graph named `quickstart`: a service writes
