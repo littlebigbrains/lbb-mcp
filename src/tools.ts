@@ -1508,6 +1508,12 @@ export function registerLbbTools(
           .describe(
             "activate: the revision the workflow had bound when you read it; another one fails with workflow_revision_conflict.",
           ),
+        experiment: z
+          .string()
+          .optional()
+          .describe(
+            "activate: an experiment (exp_…) whose B this activation applies; revision is B's revision. The workflow must still run the experiment's A, else experiment_outdated; when B's revision is active already, nothing changes.",
+          ),
         install: testInstallSchema
           .optional()
           .describe(
@@ -1583,9 +1589,12 @@ export function registerLbbTools(
             return workflows.named.activateRevision(
               workflowName(args),
               revisionId(args.revision),
-              args.expected_revision
-                ? { expectedRevision: args.expected_revision }
-                : {},
+              {
+                ...(args.expected_revision
+                  ? { expectedRevision: args.expected_revision }
+                  : {}),
+                ...(args.experiment ? { experiment: args.experiment } : {}),
+              },
             );
           case "tests_create":
             return workflows.tests.create(testRequest(args));
@@ -1795,6 +1804,12 @@ export function registerLbbTools(
           .describe(
             "put_choice / delete_choice: a named workflow of the graph; absent for the environment.",
           ),
+        experiment: z
+          .string()
+          .optional()
+          .describe(
+            "put_choice: an experiment (exp_…) whose B this choice applies, with workflow; use and the model are B's change. The workflow must still run the experiment's A, else experiment_outdated; when it runs B already, nothing changes.",
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1839,6 +1854,7 @@ export function registerLbbTools(
                 ...(args.effort ? { effort: args.effort } : {}),
               },
               ...(args.workflow ? { workflow: args.workflow } : {}),
+              ...(args.experiment ? { experiment: args.experiment } : {}),
             });
           case "delete_choice":
             if (!args.use) throw new Error("delete_choice requires use");
