@@ -2,6 +2,40 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- Add explicit `lbb_commit mode=records` using the strict SDK records helper,
+  exact body/key/epoch snapshots, existing destructive approval and complete
+  receipts. Unknown POST outcomes retain the original key; oversized known
+  acceptance remains accepted. No graph activation, conversion or legacy fact
+  behavior changes. Requires the matching unreleased client with `records.commit`;
+  release that client first. Package versions and dependencies are unchanged.
+
+- `lbb_files` `pages` names a page that needs OCR (`ocr_required: true`, no
+  lines) and counts such pages in its summary, so a scan no longer reads as
+  an empty page. The tool contract digest does not change.
+
+- `lbb_evals` has the actions `experiments`, `experiment`,
+  `experiments_estimate`, `experiments_create` and `experiments_cancel`. A
+  start spends model budget, so the tool tells the agent to show the
+  estimate first and to start only what the user confirmed. An experiment
+  changes no workflow and no graph. The tool contract digest changes with
+  the new arguments.
+
+- `lbb_workflows` actions `revisions` and `revision` return `last_tested` on a
+  revision of a `values.extract` workflow, and the description of
+  `lbb_workflows_manage` action `activate` tells an agent to say so when it
+  is `null`; an experiment's arm adds `experiment` to the fact. No new
+  action or parameter.
+- `lbb_model_choice_manage` `put_choice` and `lbb_workflows_manage`
+  `activate` take `experiment` (`exp_…`): the write applies that
+  experiment's B, and the server refuses it with `experiment_outdated`
+  when the workflow no longer runs the experiment's A. Neither asks for
+  approval, as before. The tool contract digest changes with the new
+  argument. Use `experiment` only after every node runs the version with
+  experiments: an earlier node ignores it on an activation and skips the
+  check of A.
+
 ## 0.16.0 (2026-10-26)
 
 - `lbb_inspect action=entity` accepts full RDF IRIs and the opt-in `records/1` view, with exact terms, separate assertions, schema guards and snapshot pins. Complete records exceeding the output budget fail explicitly instead of being compacted. It uses `entities.retrieve` of client 0.31.0.

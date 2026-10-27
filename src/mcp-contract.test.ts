@@ -168,6 +168,24 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   );
   assert.equal(byName.lbb_commit.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_commit.annotations?.idempotentHint, true);
+  assert.equal(byName.lbb_commit.annotations?.destructiveHint, true);
+  const commitProperties = byName.lbb_commit.inputSchema.properties as Record<
+    string,
+    {
+      type?: string;
+      enum?: string[];
+      additionalProperties?: unknown;
+    }
+  >;
+  assert.deepEqual(commitProperties.mode.enum, [
+    "facts",
+    "retract",
+    "search_feedback",
+    "records",
+  ]);
+  assert.equal(commitProperties.records.type, "object");
+  assert.notEqual(commitProperties.records.additionalProperties, false);
+  assert.equal(commitProperties.expected_graph_epoch.type, "string");
   assert.equal(byName.lbb_configure.annotations?.readOnlyHint, false);
   assert.equal(byName.lbb_configure.annotations?.idempotentHint, undefined);
   assert.match(
@@ -211,9 +229,16 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "datasets_export",
     "datasets_create",
     "datasets_items",
+    "experiments",
+    "experiment",
+    "experiments_estimate",
+    "experiments_create",
+    "experiments_cancel",
   ]) {
     assert.ok(evalActions?.includes(action), action);
   }
+  // An experiment spends model budget: the agent shows the estimate first.
+  assert.match(byName.lbb_evals.description ?? "", /experiments_estimate/);
   assert.match(
     byName.lbb_evals.description ?? "",
     /review only what the user confirmed/,
@@ -265,7 +290,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "ed6bfec58b8512d58c19fda2a58a83554f85a2f282efbba854a1f70459d1aa9d",
+    "9fb2598355d24c8b0e369ca22b8a339450036252ec9b1cc98d24eada24c26e5b",
   );
   await client.close();
 });

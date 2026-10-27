@@ -58,6 +58,8 @@ export interface PageLinesAnswer {
     height: number;
     lines_total: number;
     lines_matching: number;
+    /** The page is mostly image and has fewer than 16 characters of text: the parse read almost none, and OCR is not built. */
+    ocr_required?: true;
     lines: string[];
   }>;
   shown: number;
@@ -102,6 +104,7 @@ export function pageLines(
       height: page.height,
       lines_total: page.lines.length,
       lines_matching: matching,
+      ...(page.ocr_required ? { ocr_required: true as const } : {}),
       lines: shown,
     });
     if (stoppedAt !== undefined) {
@@ -286,8 +289,14 @@ export function registerFilesTool(host: ToolHost, client: LbbClient): void {
           answer.to - answer.from > 1
             ? `pages ${answer.from} to ${answer.to - 1}`
             : `page ${answer.from}`;
+        const scanned = lines.pages.filter(
+          (entry) => entry.ocr_required,
+        ).length;
+        const needsOcr = scanned
+          ? `; ${scanned === 1 ? "1 page needs" : `${scanned} pages need`} OCR, almost no text was read`
+          : "";
         return toolResult({
-          summary: `${label}, ${range} of ${answer.page_count} (0-based): ${lines.shown} lines${lines.next ? ", more after next" : ""}`,
+          summary: `${label}, ${range} of ${answer.page_count} (0-based): ${lines.shown} lines${needsOcr}${lines.next ? ", more after next" : ""}`,
           data: {
             sha256: answer.sha256,
             parser: answer.parser,
