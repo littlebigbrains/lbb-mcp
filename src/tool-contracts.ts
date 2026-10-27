@@ -707,6 +707,34 @@ export const evalDatasetItemSchema = z
   })
   .strict();
 
+/** What B changes in A in an experiment: the model of one use, or a revision. */
+export const experimentArmSchema = z
+  .object({
+    model: z
+      .object({
+        use: z
+          .enum(["extract", "decide"])
+          .describe("The use whose model B changes"),
+        model: z
+          .object({
+            provider: z.string().describe("anthropic, typesafe or mock"),
+            model: z.string().describe("A model of the use's options"),
+            effort: z
+              .string()
+              .optional()
+              .describe("The effort of a Claude model"),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
+    revision: z
+      .string()
+      .optional()
+      .describe("A kept settings revision of the workflow (wrev_…)"),
+  })
+  .strict();
+
 export const inspectInputSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("guide"), ...readScope }).strict(),
   z
