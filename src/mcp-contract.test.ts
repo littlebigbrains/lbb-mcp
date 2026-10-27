@@ -211,9 +211,16 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "datasets_export",
     "datasets_create",
     "datasets_items",
+    "experiments",
+    "experiment",
+    "experiments_estimate",
+    "experiments_create",
+    "experiments_cancel",
   ]) {
     assert.ok(evalActions?.includes(action), action);
   }
+  // An experiment spends model budget: the agent shows the estimate first.
+  assert.match(byName.lbb_evals.description ?? "", /experiments_estimate/);
   assert.match(
     byName.lbb_evals.description ?? "",
     /review only what the user confirmed/,
@@ -265,7 +272,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "ed6bfec58b8512d58c19fda2a58a83554f85a2f282efbba854a1f70459d1aa9d",
+    "e9a0b56d5e4f610f5eb9a23ea3bc4842ac7e33058a855b5e9a27bfa4bfca9178",
   );
   await client.close();
 });
