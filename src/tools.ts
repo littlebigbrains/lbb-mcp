@@ -40,6 +40,7 @@ import {
   detailSchema,
   entityEmbeddingSchema,
   evalDatasetItemSchema,
+  experimentArmSchema,
   evalLabelItemSchema,
   evidenceSchema,
   graphScope,
@@ -90,6 +91,7 @@ const WORKFLOW_QUEUE_PAGE_MAX = 100;
 const WORKFLOW_RUN_RESULTS_PAGE_MAX = 200;
 /** The most datasets `GET /v1/evals/datasets` returns in one page. */
 const EVAL_DATASETS_PAGE_MAX = 50;
+const EVAL_EXPERIMENTS_PAGE_MAX = 50;
 
 export function registerLbbTools(
   server: McpServer,
@@ -1291,7 +1293,7 @@ export function registerLbbTools(
     "lbb_workflows",
     {
       description:
-        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox, one page in data (has_more and next_cursor page them with cursor and limit); name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; the items are in data, and has_more and next_cursor page them with cursor and limit. run_results (name) shows what the workflow's runs did with each input, newest run first: the input's IRI and label, its outcome (written, review, no_value, failed, duplicate) and its values (the value, the quote that states it, its support, the conversion, and the review item it went to); run keeps one run (with run_counts, every input by outcome), outcome keeps some outcomes, iri keeps one input; data, has_more and next_cursor page them. A run records its results when it ends; they are kept 30 days. revisions (name) shows the history of a workflow's settings, newest change first: each item is a revision (settings, the request that makes it, and an id wrev_… that is the hash of the settings) with who changed it, when, how (create, change, activate, existing) and bound (the one in use); a row whose revision was deleted has available false and no settings; has_more and next_cursor page it with cursor and limit (1 to 100, default 20). revision (name, revision) reads one revision; compare two by their settings to say what changed. Each run summary names the revision it ran on. Message workflows of the workflow engine are not listed here. tests lists the graph's workflow tests, newest first, without texts and results (name: one workflow's tests), one page with next_cursor; tests_get reads one test (id) with its inputs' texts and, per input, each value read with its quote, its support and what the live workflow does with it (writes it, gives it to review, or drops it). A test goes queued, running, then done, failed or cancelled. Create, refresh, pause or resume with lbb_workflows_manage, which also starts, answers and cancels tests and goes back to an earlier revision with its action activate; delete with lbb_workflows_delete.",
+        "Starter workflows and triggered workflows, read only. A starter workflow is a template; a triggered workflow is a workflow created from one on the graph. It watches a class: when a published commit adds or changes instances of the class (or changes the watched fields), the workflow reads them and does its work. search.embed keeps an embedding of the class (the same as lbb_embeddings); ontology.fit reads text fields and files ontology suggestions (the same as lbb_fit_sources); workflow (a developer workflow) sends the new and changed instances to a workflow of the developer's worker as trigger messages, and that code writes the facts the workflow owns. documents.parse reads uploaded PDF files into pages with line boxes, documents.link connects mentions of the same thing across the documents (it writes DocEntry and DocMention instances and links each mention to the entry that defines or describes it), documents.map proposes each link as a FactProposal in the graph's own ontology (fact_subject, fact_predicate, fact_object, fact_confidence, fact_evidence) for a review workflow, and values.extract fills chosen properties from text, each value with a quote; read the files and their pages with lbb_files. starters lists the starter workflows this server offers with their group, settings and whether each can run here. list shows every triggered workflow of the graph with its state (backfilling, ready, paused, failed, unavailable), lag, counters, this month's spend and last error; get shows one (starter and name) with its own status in details (for workflow: the messages sent, the instances waiting, the message in flight and whether it is paused). preview shows what creating one would do (the resolved watch, the instance count and the workflow's own preview; for workflow, the first messages it would send), calls no model and stores nothing. workflows lists the same workflows as workflows with triggers (/v1/workflows/named): each one's target workflow type (LBB's own are lbb.* types), its shards (engine identities starter.<name> and starter.<name>.<k>), its routing field, its window, its one watch trigger, its status and each shard's inbox, one page in data (has_more and next_cursor page them with cursor and limit); name for one. queue (name) shows what a workflow's watch has not sent yet: each waiting instance with its shard and its origin (a backfill, a commit range with the watched fields and the requests that changed it, a run now, a schema change), the pass in progress, and per shard its message in flight and its first unfinished turns with their origins; the items are in data, and has_more and next_cursor page them with cursor and limit. run_results (name) shows what the workflow's runs did with each input, newest run first: the input's IRI and label, its outcome (written, review, no_value, failed, duplicate) and its values (the value, the quote that states it, its support, the conversion, and the review item it went to); run keeps one run (with run_counts, every input by outcome), outcome keeps some outcomes, iri keeps one input; data, has_more and next_cursor page them. A run records its results when it ends; they are kept 30 days. revisions (name) shows the history of a workflow's settings, newest change first: each item is a revision (settings, the request that makes it, and an id wrev_… that is the hash of the settings) with who changed it, when, how (create, change, activate, existing) and bound (the one in use); a row whose revision was deleted has available false and no settings; has_more and next_cursor page it with cursor and limit (1 to 100, default 20). last_tested on a revision of a workflow that has tests (values.extract) says what the workflow's tests read with those exact settings: an object (test, finished, counts, and experiment when the test is an arm of an experiment) names the newest test that read inputs with them, null means no test is recorded for those settings, and no key means the workflow has no tests or the server does not say; it shows what happened and gives no verdict. revision (name, revision) reads one revision; compare two by their settings to say what changed. Each run summary names the revision it ran on. Message workflows of the workflow engine are not listed here. tests lists the graph's workflow tests, newest first, without texts and results (name: one workflow's tests), one page with next_cursor; tests_get reads one test (id) with its inputs' texts and, per input, each value read with its quote, its support and what the live workflow does with it (writes it, gives it to review, or drops it). A test goes queued, running, then done, failed or cancelled. Create, refresh, pause or resume with lbb_workflows_manage, which also starts, answers and cancels tests and goes back to an earlier revision with its action activate; delete with lbb_workflows_delete.",
       inputSchema: {
         action: z.enum([
           "starters",
@@ -1459,7 +1461,7 @@ export function registerLbbTools(
     "lbb_workflows_manage",
     {
       description:
-        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, one trigger (class and fields for a watch, media_types for a content trigger on uploads, schedule for one run per slot of a timer, or stream for the events a client sends, in batches), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again, a content trigger reads its log again, a schedule sends one run outside its slots, a stream sends its partial batches. activate (name, revision) makes an earlier revision of a workflow's settings (from lbb_workflows action=revisions) the one in use: it goes through the same checks as a change, and answers the workflow with its active_revision. Show the user what changes first (compare the settings of the two revisions), and pass expected_revision, the revision you read as bound, so a change by someone else since fails with workflow_revision_conflict. A revision whose settings the graph now reads differently fails with workflow_revision_stale; then change the workflow instead. Activating changes what the workflow does from then on and deletes no data, so it is not a destructive write; a change of the watch, the parameters or the gate makes the workflow read its class again, and work that waits or runs keeps the revision it started with. tests_create tests a values.extract workflow on chosen inputs before it writes: name (a workflow of the graph; starter defaults to values.extract) or install (a workflow not created yet, as use takes it: starter, name, watch, params, gate), and iris (at most 20) or sample (1 to 20, default 6), and models to try other models before choosing one. A test reads each input as the workflow would and calls its models (the calls count in the monthly workflow budget); it writes nothing to the graph. Poll lbb_workflows action=tests_get. tests_answer records the person's answer to one value of a read input (id, iri, property, answer: accept, reject, correct with value, or cant_tell; null removes it); it writes nothing to the graph. Answer only what the user decided. tests_cancel stops a queued or running test (id). Save a test's answers as a dataset with lbb_evals action=datasets_create.",
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. A workflow that calls models (ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, one trigger (class and fields for a watch, media_types for a content trigger on uploads, schedule for one run per slot of a timer, or stream for the events a client sends, in batches), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name) runs a workflow with triggers now: its watch sends every instance again, a content trigger reads its log again, a schedule sends one run outside its slots, a stream sends its partial batches. activate (name, revision) makes an earlier revision of a workflow's settings (from lbb_workflows action=revisions) the one in use: it goes through the same checks as a change, and answers the workflow with its active_revision. Show the user what changes first (compare the settings of the two revisions), and when the revision's last_tested is null say that no test is recorded for those settings and ask before you activate (activation stays allowed), and pass expected_revision, the revision you read as bound, so a change by someone else since fails with workflow_revision_conflict. A revision whose settings the graph now reads differently fails with workflow_revision_stale; then change the workflow instead. Activating changes what the workflow does from then on and deletes no data, so it is not a destructive write; a change of the watch, the parameters or the gate makes the workflow read its class again, and work that waits or runs keeps the revision it started with. tests_create tests a values.extract workflow on chosen inputs before it writes: name (a workflow of the graph; starter defaults to values.extract) or install (a workflow not created yet, as use takes it: starter, name, watch, params, gate), and iris (at most 20) or sample (1 to 20, default 6), and models to try other models before choosing one. A test reads each input as the workflow would and calls its models (the calls count in the monthly workflow budget); it writes nothing to the graph. Poll lbb_workflows action=tests_get. tests_answer records the person's answer to one value of a read input (id, iri, property, answer: accept, reject, correct with value, or cant_tell; null removes it); it writes nothing to the graph. Answer only what the user decided. tests_cancel stops a queued or running test (id). Save a test's answers as a dataset with lbb_evals action=datasets_create.",
       inputSchema: {
         action: z.enum([
           "use",
@@ -1507,6 +1509,12 @@ export function registerLbbTools(
           .optional()
           .describe(
             "activate: the revision the workflow had bound when you read it; another one fails with workflow_revision_conflict.",
+          ),
+        experiment: z
+          .string()
+          .optional()
+          .describe(
+            "activate: an experiment (exp_…) whose B this activation applies; revision is B's revision. The workflow must still run the experiment's A, else experiment_outdated; when B's revision is active already, nothing changes.",
           ),
         install: testInstallSchema
           .optional()
@@ -1583,9 +1591,12 @@ export function registerLbbTools(
             return workflows.named.activateRevision(
               workflowName(args),
               revisionId(args.revision),
-              args.expected_revision
-                ? { expectedRevision: args.expected_revision }
-                : {},
+              {
+                ...(args.expected_revision
+                  ? { expectedRevision: args.expected_revision }
+                  : {}),
+                ...(args.experiment ? { experiment: args.experiment } : {}),
+              },
             );
           case "tests_create":
             return workflows.tests.create(testRequest(args));
@@ -1795,6 +1806,12 @@ export function registerLbbTools(
           .describe(
             "put_choice / delete_choice: a named workflow of the graph; absent for the environment.",
           ),
+        experiment: z
+          .string()
+          .optional()
+          .describe(
+            "put_choice: an experiment (exp_…) whose B this choice applies, with workflow; use and the model are B's change. The workflow must still run the experiment's A, else experiment_outdated; when it runs B already, nothing changes.",
+          ),
         detail: detailSchema,
         ...graphScope,
       },
@@ -1839,6 +1856,7 @@ export function registerLbbTools(
                 ...(args.effort ? { effort: args.effort } : {}),
               },
               ...(args.workflow ? { workflow: args.workflow } : {}),
+              ...(args.experiment ? { experiment: args.experiment } : {}),
             });
           case "delete_choice":
             if (!args.use) throw new Error("delete_choice requires use");
@@ -1854,12 +1872,33 @@ export function registerLbbTools(
     if (!id) throw new Error("this action requires id");
     return id;
   };
+  const experimentId = (id?: string) => {
+    if (!id) throw new Error("this action requires id (the experiment's)");
+    return id;
+  };
+  const experimentRequest = (args: {
+    workflow?: string;
+    dataset?: string;
+    b?: z.infer<typeof experimentArmSchema>;
+    max_items?: number;
+    max_cost_usd?: number;
+  }) => {
+    if (!args.workflow || !args.dataset || !args.b)
+      throw new Error("this action requires workflow, dataset and b");
+    return {
+      workflow: args.workflow,
+      dataset: args.dataset,
+      b: args.b,
+      ...(args.max_items ? { max_items: args.max_items } : {}),
+      ...(args.max_cost_usd ? { max_cost_usd: args.max_cost_usd } : {}),
+    };
+  };
 
   host.register(
     "lbb_evals",
     {
       description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph. Experiments: two configurations of a workflow, A and B, on the items of a dataset, with the difference of B against A and its 95% interval. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. Each arm runs as a workflow test that writes nothing to the graph and spends model budget; each item is graded against the dataset's labels. experiments_estimate shows the cost first (items, the cost of both arms, the limit, the budget left): call it, show the user the figures, and start only what the user confirmed. experiments_create starts one (workflow, dataset, b, optionally max_items up to 200 and max_cost_usd up to 100, default 5); poll experiment (id) until its status is done, failed or cancelled, and read report.delta with ci_low and ci_high (outcome too_few under 10 items, else better, worse or same) and the item rows. experiments lists them (workflow, dataset, status, one page with next_cursor); experiments_cancel stops one, keeping what it compared. None of them changes the workflow or the graph. To use B, make the change with the experiment's id: lbb_model_choice_manage action=put_choice (or lbb_workflows_manage action=activate) with experiment, after the user confirmed; it fails with experiment_outdated when the workflow moved since.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -1883,6 +1922,11 @@ export function registerLbbTools(
           "datasets_export",
           "datasets_create",
           "datasets_items",
+          "experiments",
+          "experiment",
+          "experiments_estimate",
+          "experiments_create",
+          "experiments_cancel",
         ]),
         trace_id: z
           .string()
@@ -2078,12 +2122,52 @@ export function registerLbbTools(
           .string()
           .optional()
           .describe(
-            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…).",
+            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…). experiment, experiments_cancel: the experiment's id (exp_…).",
           ),
         cursor: z
           .string()
           .optional()
-          .describe("datasets: the next_cursor of the page before."),
+          .describe(
+            "datasets, experiments: the next_cursor of the page before.",
+          ),
+        workflow: z
+          .string()
+          .optional()
+          .describe(
+            "experiments_estimate, experiments_create: the workflow to compare. experiments: only the experiments of this workflow.",
+          ),
+        dataset: z
+          .string()
+          .optional()
+          .describe(
+            "experiments_estimate, experiments_create: the dataset (ds_…) whose items both arms run. experiments: only the experiments on this dataset.",
+          ),
+        b: experimentArmSchema
+          .optional()
+          .describe(
+            "experiments_estimate, experiments_create: what B changes in A: {model: {use, model: {provider, model, effort}}} or {revision}, not both.",
+          ),
+        max_items: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe(
+            "experiments_estimate, experiments_create: run the dataset's first items only (default 200).",
+          ),
+        max_cost_usd: z
+          .number()
+          .positive()
+          .max(100)
+          .optional()
+          .describe(
+            "experiments_estimate, experiments_create: the cost limit of both arms in US dollars (default 5).",
+          ),
+        status: z
+          .enum(["queued", "running", "done", "failed", "cancelled"])
+          .optional()
+          .describe("experiments: only the experiments with this status."),
         name: z
           .string()
           .optional()
@@ -2158,6 +2242,12 @@ export function registerLbbTools(
       reference,
       id,
       cursor,
+      workflow,
+      dataset,
+      b,
+      max_items,
+      max_cost_usd,
+      status,
       name,
       kind,
       install,
@@ -2166,6 +2256,23 @@ export function registerLbbTools(
       detail,
       graph,
     }) => {
+      if (action === "experiments") {
+        const experiments = scoped(client, graph).evals.experiments;
+        return runPage(
+          client,
+          "lbb_evals.experiments",
+          detail,
+          pageLimit(detail, limit, EVAL_EXPERIMENTS_PAGE_MAX),
+          (pageSize) =>
+            experiments.list({
+              workflow,
+              dataset,
+              status,
+              limit: pageSize,
+              cursor,
+            }),
+        );
+      }
       if (action === "datasets") {
         const datasets = scoped(client, graph).evals.datasets;
         return runPage(
@@ -2317,6 +2424,30 @@ export function registerLbbTools(
               throw new Error("datasets_items requires items");
             return target.evals.datasets.addItems(datasetId(id), examples);
           }
+          case "experiment":
+            return target.evals.experiments.get(experimentId(id));
+          case "experiments_cancel":
+            return target.evals.experiments.cancel(experimentId(id));
+          case "experiments_estimate":
+            return target.evals.experiments.estimate(
+              experimentRequest({
+                workflow,
+                dataset,
+                b,
+                max_items,
+                max_cost_usd,
+              }),
+            );
+          case "experiments_create":
+            return target.evals.experiments.create(
+              experimentRequest({
+                workflow,
+                dataset,
+                b,
+                max_items,
+                max_cost_usd,
+              }),
+            );
         }
       });
     },
