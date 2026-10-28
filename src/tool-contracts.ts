@@ -674,6 +674,17 @@ const evalExpectedValueSchema = z
       .optional()
       .describe("Words of the text that state the value"),
     reason: z.string().optional().describe("Why a value is left out"),
+    source: z
+      .object({
+        kind: z.enum(["test", "review"]),
+        id: z.string(),
+        at: z.string(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Who gave the label and when: a person's answer on a test (wtest_…) or a review item (rev_…). Send it back as read, or leave it out",
+      ),
   })
   .strict();
 
@@ -704,6 +715,34 @@ export const evalDatasetItemSchema = z
       })
       .strict()
       .optional(),
+  })
+  .strict();
+
+/** What B changes in A in an experiment: the model of one use, or a revision. */
+export const experimentArmSchema = z
+  .object({
+    model: z
+      .object({
+        use: z
+          .enum(["extract", "decide"])
+          .describe("The use whose model B changes"),
+        model: z
+          .object({
+            provider: z.string().describe("anthropic, typesafe or mock"),
+            model: z.string().describe("A model of the use's options"),
+            effort: z
+              .string()
+              .optional()
+              .describe("The effort of a Claude model"),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
+    revision: z
+      .string()
+      .optional()
+      .describe("A kept settings revision of the workflow (wrev_…)"),
   })
   .strict();
 
