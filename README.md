@@ -164,7 +164,7 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_workflows_manage` | Create a workflow from a starter workflow on a class (a developer workflow with its workflow type, owned outputs and batch), ask it to run now, or pause and resume a developer workflow. Define a workflow with triggers of your worker (shards, routing field, window) and run it now. |
 | `lbb_workflows_delete` | Delete a triggered workflow, or a workflow with triggers by its name. What it wrote stays. |
 | `lbb_files` | List the files of a graph, all or by parse status or a part of the name, and read the parsed pages of one: each line with its id, its box on the page and its text. |
-| `lbb_commit` | Write or retract JSON facts, or record search feedback. |
+| `lbb_commit` | Write legacy JSON facts, explicitly commit versioned records, retract facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), publish validation rules, or keep the graph's notes and worked examples for questions in plain words (`get_rewrite_profile`, `set_rewrite_profile`). |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. Read the model checks of a graph, and agree with or correct a check that the user confirmed. |
 | `lbb_model_choice` | Read which model each use runs (question answers, query routing, search rerank, ontology fit, eval labels), and the trials that test other models against the graph's ground truth. |
@@ -175,12 +175,78 @@ See [search by meaning](https://docs.littlebigbrain.com/guides/search-by-meaning
 for embedding setup. To define constraints with the Shapes Constraint Language
 (SHACL), see [query and validation](https://docs.littlebigbrain.com/guides/sparql-and-shacl/).
 
-RDF imports and JSON facts use different write workflows. A graph first written
-through `lbb_rdf` does not accept JSON fact writes through `lbb_commit`. Choose
-the workflow when creating the graph. RDF updates
-support additive `INSERT DATA`;
+Legacy `mode=facts` follows the graph's existing first-write restrictions; a
+graph first written through `lbb_rdf` refuses that legacy JSON path. Explicit
+`mode=records` uses the separate versioned contract described below and does not
+activate or convert an existing graph. RDF updates support additive `INSERT DATA`;
 see the [RDF guide](https://docs.littlebigbrain.com/guides/load-rdf/) for format and
 update limits.
+
+
+## Versioned records commits
+
+Use explicit `lbb_commit` `mode: "records"` with a nested `records` body whose
+`version` is `records/1`. The server must recognize `records_commit_v1` and the
+graph must already have qualified support; protocol recognition does not
+activate a graph or offer a graph-type choice. Ordinary/missing/unactivated
+graphs keep their typed refusal. There is no creation, conversion or activation
+option here. This requires the matching client release containing
+`records.commit`; publish that client before releasing this MCP update.
+
+```json
+{
+  "mode": "records",
+  "records": {
+    "version": "records/1",
+    "entities": [{
+      "id": "https://example.org/service/auth",
+      "add": {"https://example.org/title": {
+        "@value": "Auth Service",
+        "@type": "http://www.w3.org/2001/XMLSchema#string"
+      }}
+    }]
+  },
+  "idempotency_key": "auth-title:v1"
+}
+```
+
+The complete object is forwarded without dropping unknown fields, lowercasing
+IRIs, coercing literals or resolving schema keys locally. The server validates
+it strictly. Do not mix legacy facts/embeddings/properties/retract/feedback or
+`dry_run`/backfill arguments into records mode, even with empty or false values.
+`expected_graph_epoch` adds an exact decimal incarnation guard.
+
+An explicit idempotency key wins. When omitted, MCP derives a stable content key
+from the original body, graph and epoch guard. The snapshot and key are fixed
+before approval and transport retries. Keep the same original body/key after a
+lost reply; do not use a new key to investigate an unknown result. An exhausted
+POST transport failure or malformed success returns `record_outcome_unknown`,
+`outcome: "unknown"` and the original `idempotency_key`, without legacy fallback.
+A capability failure sends no POST and cannot become a write acceptance.
+Typed server errors keep their original code/status and also retain the recovery
+key; the tool does not invent an acceptance or refusal verdict for them.
+
+Edits that may remove support use the existing destructive approval policy:
+`set`, `unset`, `remove`, `delete`, `replace_scope`, or a relationship with
+`asserted: false`. A set may replace an existing field. The question names the
+graph and source owner/scope; refusal sends no API request. Add-only work needs
+no destructive approval. The existing person-controlled
+`LBB_MCP_DESTRUCTIVE=allow` setting applies; no body field can bypass approval.
+The server remains responsible for current authority and reserved source owners.
+
+Success returns the complete original receipt as compact JSON and structured
+content. Resolved IDs, schema, projection counts, no-op and replay are never
+compacted. Support can change with zero visible additions/removals. Acceptance,
+publication and class embedding readiness are separate observations. MCP keeps
+its 80,000 UTF-8 byte output ceiling: an unexpected oversized valid receipt reports
+`record_accepted_output_limit` with `outcome: "accepted"`, sequence and key so the
+full receipt can be recovered through the SDK/HTTP API. It never calls that
+known acceptance a failed mutation or unknown outcome. Oversized error messages
+are explicitly flagged while preserving ordinary typed codes/status.
+
+The records body is bounded to one MiB and its escaped recovery key to 8 KiB at
+the MCP boundary; the server's smaller total-request/idempotency limits still
+apply. These limits do not expand any graph/source budget or enable admin erasure.
 
 ## Pages and saved queries
 
