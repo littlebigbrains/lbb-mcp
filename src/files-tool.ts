@@ -58,6 +58,8 @@ export interface PageLinesAnswer {
     height: number;
     lines_total: number;
     lines_matching: number;
+    /** The page is mostly image and has fewer than 16 characters of text: the parse read almost none, and OCR is not built. */
+    ocr_required?: true;
     lines: string[];
   }>;
   shown: number;
@@ -102,6 +104,7 @@ export function pageLines(
       height: page.height,
       lines_total: page.lines.length,
       lines_matching: matching,
+      ...(page.ocr_required ? { ocr_required: true as const } : {}),
       lines: shown,
     });
     if (stoppedAt !== undefined) {
@@ -166,7 +169,7 @@ export function registerFilesTool(host: ToolHost, client: LbbClient): void {
     "lbb_files",
     {
       description:
-        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity); the documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows 50 files a call, newest upload first, with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count); when more follow, next names the after of the next call (with the same filters). parse_status keeps the files of one parse status; waiting is a file not parsed yet. name keeps the files whose name holds a text, in any case. A filtered list reads the Documents of the published generation and names its commit (as_of_commit_seq). A file uploaded, renamed or parsed a moment ago can be missing from it until publication. pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
+        "Files of the graph, read only. A file is a document the graph holds (its bytes and a Document entity). A file a workflow run wrote (a generated file, with an origin and an expires_at) has no Document and no Document IRI. It expires unless a person keeps it, so the list shows it only after that, and it is never evidence for a fact. The documents.parse workflow (lbb_workflows) reads the text layer of each PDF into pages with every line and its box. list shows 50 files a call, newest upload first, with their sha256, name, size, Document IRI and parse (status parsed, unsupported or failed, page_count); when more follow, next names the after of the next call (with the same filters). parse_status keeps the files of one parse status; waiting is a file not parsed yet. name keeps the files whose name holds a text, in any case. A filtered list reads the Documents of the published generation and names its commit (as_of_commit_seq). A file uploaded, renamed or parsed a moment ago can be missing from it until publication. pages reads parsed pages of one file (sha256, or name for an exact file name): from is the first 0-based page index (the page of a region and of a DocEntry or DocMention), to the page after the last one (default from+1). Each line comes as `<line id> [x0,y0,x1,y1] <text>`: the id is p<page number>-l<line number>, both from 1, and the box is normalized to the page (0 to 1, origin top left). contains keeps the lines that hold a text; max_lines caps the lines (default 200). When lines were left out, next names the from and line_offset of the next call. A file not parsed yet answers file_not_parsed.",
       inputSchema: {
         action: z.enum(["list", "pages"]),
         after: z
@@ -286,8 +289,14 @@ export function registerFilesTool(host: ToolHost, client: LbbClient): void {
           answer.to - answer.from > 1
             ? `pages ${answer.from} to ${answer.to - 1}`
             : `page ${answer.from}`;
+        const scanned = lines.pages.filter(
+          (entry) => entry.ocr_required,
+        ).length;
+        const needsOcr = scanned
+          ? `; ${scanned === 1 ? "1 page needs" : `${scanned} pages need`} OCR, almost no text was read`
+          : "";
         return toolResult({
-          summary: `${label}, ${range} of ${answer.page_count} (0-based): ${lines.shown} lines${lines.next ? ", more after next" : ""}`,
+          summary: `${label}, ${range} of ${answer.page_count} (0-based): ${lines.shown} lines${needsOcr}${lines.next ? ", more after next" : ""}`,
           data: {
             sha256: answer.sha256,
             parser: answer.parser,

@@ -34,8 +34,10 @@ export async function connect(
   options?: LbbServerOptions,
   elicit?: Elicit,
   elicitation: Record<string, object> = {},
+  clientOptions: { maxRetries?: number } = {},
 ): Promise<Client> {
   const lbb = new LbbClient({
+    ...clientOptions,
     baseUrl: "http://h",
     apiKey: "k",
     graph: "g",

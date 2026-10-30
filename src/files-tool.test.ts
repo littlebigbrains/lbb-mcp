@@ -30,6 +30,18 @@ function page(index: number, texts: string[]): Schemas["FilePage"] {
   };
 }
 
+test("a page that needs OCR says so instead of reading as an empty page", () => {
+  const scan: Schemas["FilePage"] = { ...page(1, []), ocr_required: true };
+  const answer = pageLines([page(0, ["a"]), scan], {
+    lineOffset: 0,
+    maxLines: 10,
+  });
+  assert.equal(answer.pages[0].ocr_required, undefined);
+  assert.equal(answer.pages[1].ocr_required, true);
+  assert.deepEqual(answer.pages[1].lines, []);
+  assert.equal(answer.pages[1].lines_total, 0);
+});
+
 const FILES = {
   files: [
     {
