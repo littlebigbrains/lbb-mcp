@@ -1,6 +1,11 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { LbbClient, LbbError, type Schemas } from "@littlebigbrain/client";
+import {
+  LbbClient,
+  LbbError,
+  LbbRecordCommitOutcomeError,
+  type Schemas,
+} from "@littlebigbrain/client";
 import {
   DEFAULT_DETAIL,
   HARD_OUTPUT_CHARS,
@@ -654,25 +659,37 @@ export class ToolError extends Error {
 
 export function errorResult(error: unknown) {
   const payload =
-    error instanceof LbbError
+    error instanceof LbbRecordCommitOutcomeError
       ? {
-          type: error.type ?? "api_error",
-          code: error.code ?? "unstructured_error",
-          message: error.message,
-          param: error.param ?? null,
-          request_id: error.requestId ?? null,
-          doc_url: error.docUrl ?? null,
-          status: error.status,
-        }
-      : {
           type: "tool_error",
-          code: error instanceof ToolError ? error.code : "tool_error",
-          message: error instanceof Error ? error.message : String(error),
+          code: "record_outcome_unknown",
+          message: error.message,
+          outcome: error.outcome,
+          idempotency_key: error.idempotencyKey,
           param: null,
           request_id: null,
           doc_url: null,
           status: null,
-        };
+        }
+      : error instanceof LbbError
+        ? {
+            type: error.type ?? "api_error",
+            code: error.code ?? "unstructured_error",
+            message: error.message,
+            param: error.param ?? null,
+            request_id: error.requestId ?? null,
+            doc_url: error.docUrl ?? null,
+            status: error.status,
+          }
+        : {
+            type: "tool_error",
+            code: error instanceof ToolError ? error.code : "tool_error",
+            message: error instanceof Error ? error.message : String(error),
+            param: null,
+            request_id: null,
+            doc_url: null,
+            status: null,
+          };
   const structuredContent = { error: payload };
   return {
     content: [
