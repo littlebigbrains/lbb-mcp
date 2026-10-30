@@ -1790,6 +1790,20 @@ test("workflow tools route to the starter and triggered workflow API", async () 
       id,
       expected_revision: "wrev_00000000000000000000000000000002",
     });
+    await client.callTool({
+      name: "lbb_workflows_manage",
+      arguments: {
+        action: "activate",
+        name: "sinks",
+        revision: id,
+        experiment: "exp_1791967648726a1b2c3d4e5f6",
+      },
+    });
+    assert.deepEqual(last().body, {
+      name: "sinks",
+      id,
+      experiment: "exp_1791967648726a1b2c3d4e5f6",
+    });
 
     // Manage: use and refresh.
     await client.callTool({

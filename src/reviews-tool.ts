@@ -117,7 +117,7 @@ export function registerReviewsTools(host: ToolHost, client: LbbClient): void {
   host.register(
     "lbb_reviews",
     {
-      description: `Review items, read only: questions for a person (human in the loop) that workflows, integrations, agents and people file. ${KINDS_TEXT} list returns one page as the server sends it ({object, data, has_more, next_cursor}), the latest update first: pass next_cursor as cursor, with the same filters, for the next page. get reads one item (rev_…) with its question, evidence, answer and effects. patterns groups the live items that ask one decision, the largest first. Evals files the questions of model checks (origin_id evals:checks), calibration sessions (evals:calibration) and golden queries (evals:golden) as grade and choice items; eval_id keeps the items of one record, and their answer is the record's label. File, answer, comment on or withdraw items with lbb_reviews_manage.`,
+      description: `Review items, read only: questions for a person (human in the loop) that workflows, integrations, agents and people file. ${KINDS_TEXT} list returns one page as the server sends it ({object, data, has_more, next_cursor}), the latest update first: pass next_cursor as cursor, with the same filters, for the next page. get reads one item (rev_…) with its question, evidence, answer and effects. patterns groups the live items that ask one decision, the largest first. Evals files the questions of model checks (origin_id evals:checks), calibration sessions (evals:calibration), golden queries (evals:golden) and the values the two arms of an experiment differ on (evals:datasets) as grade and choice items; eval_id keeps the items of one record (for evals:datasets, the dataset), and their answer is the record's label. An item of evals:datasets asks whether one value is right or wrong, and the origin names the dataset item, the property and the value. File, answer, comment on or withdraw items with lbb_reviews_manage.`,
       inputSchema: {
         action: z.enum(["list", "get", "patterns"]),
         status: z
@@ -142,7 +142,7 @@ export function registerReviewsTools(host: ToolHost, client: LbbClient): void {
           .string()
           .optional()
           .describe(
-            "list, patterns: the items Evals filed for one record (eval.id): a calibration session, a model call's check, a golden.",
+            "list, patterns: the items Evals filed for one record (eval.id): a calibration session, a model call's check, a golden, a dataset.",
           ),
         workflow: z
           .string()
