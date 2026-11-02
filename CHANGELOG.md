@@ -2,8 +2,10 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
-## Unreleased
+## 0.18.0 (2026-11-02)
 
+- Requires `@littlebigbrain/client` `^0.33.0`, which has the `inputs` option of
+  `workflows.named.run`.
 - The tools name the hosted agent starter (`agent`). `lbb_workflows` says
   that `agent` is the hosted `lbb.agent@v1` starter, that it proposes values
   only for `owns.properties` and produces no files, and that the catalog entry
@@ -31,10 +33,9 @@ All notable changes to the `@littlebigbrain/mcp` package are documented here.
   workflow is paused. Other actions refuse `inputs` before any request. A call
   without `inputs` is the run now it was before. The tool contract digest
   changes with the new argument.
-- `inputs` goes out as a direct request to `POST /v1/workflows/named/run`,
-  because client 0.32.0, the version this package requires, has no `inputs`
-  option on `workflows.named.run`. A later client release adds it. The wire
-  request does not change when this package moves to it.
+- `inputs` goes through `workflows.named.run(name, { inputs })` of client
+  0.33.0. The wire request to `POST /v1/workflows/named/run` does not change.
+  The tool text and the contract digest do not change either.
 
 ## 0.17.0 (2026-10-30)
 
