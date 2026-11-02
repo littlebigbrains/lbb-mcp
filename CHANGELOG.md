@@ -2,6 +2,40 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- The tools name the hosted agent starter (`agent`). `lbb_workflows` says
+  that `agent` is the hosted `lbb.agent@v1` starter, that it proposes values
+  only for `owns.properties` and produces no files, and that the catalog entry
+  shows `available=false` with `agent_unavailable` on a cell that cannot run
+  it. It also describes the compact `agent` record of `run_results` and the
+  shorter retention of the full saved steps. `lbb_workflows_manage` says how
+  `use` takes an agent: `owns.properties` (1 to 64), `params.agent`, a
+  top-level `gate` and an optional `budget_usd_per_month`. The `params` and
+  `owns` arguments of `use` and `preview` describe the same shape. The tool
+  contract digest changes with the new text.
+- `lbb_workflows_manage` action `run` takes `inputs`: 1 to 16 explicit `{iri}`
+  or `{sha256}` entries. The server sends each one as a new message of origin
+  `manual`, pinned to the current revision, with a new work key. Use it to run
+  an input again after it failed or after its pin wait ended, without a rescan
+  of the whole watch. While a turn still waits for its pin, a new message for
+  the same input queues behind that turn. Use the original source IRI from
+  `run_results`, not the subject of a proposed value.
+- An `iri` entry must be what the server accepts: an absolute `http://`,
+  `https://` or `urn:` IRI of at most 2048 bytes, with no whitespace and none
+  of `< > " { } | \ ^` and the backtick. The tool refuses any other `iri`
+  before it sends a request. The advertised schema keeps its 4096-character
+  maximum, because a refinement is not part of the JSON schema. The server
+  refuses a `sha256` of a generated file, which the tool cannot know.
+- The server takes `inputs` for an agent workflow only, and not while the
+  workflow is paused. Other actions refuse `inputs` before any request. A call
+  without `inputs` is the run now it was before. The tool contract digest
+  changes with the new argument.
+- `inputs` goes out as a direct request to `POST /v1/workflows/named/run`,
+  because client 0.32.0, the version this package requires, has no `inputs`
+  option on `workflows.named.run`. A later client release adds it. The wire
+  request does not change when this package moves to it.
+
 ## 0.17.0 (2026-10-30)
 
 - Requires `@littlebigbrain/client` `^0.32.0`, which has the methods the new
