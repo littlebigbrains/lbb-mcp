@@ -1631,20 +1631,10 @@ export function registerLbbTools(
           case "define":
             return workflows.named.put(namedRequest(args));
           case "run":
-            // Client 0.32.0, the version this package requires, has no
-            // `inputs` option on `named.run`: it would drop the body and
-            // rescan the whole watch. Use the raw request until a client
-            // release has the option.
-            return args.inputs
-              ? target.request<Schemas["NamedWorkflowRunResponse"]>(
-                  "POST",
-                  "/v1/workflows/named/run",
-                  {
-                    query: { name: workflowName(args) },
-                    body: { inputs: args.inputs },
-                  },
-                )
-              : workflows.named.run(workflowName(args));
+            return workflows.named.run(
+              workflowName(args),
+              args.inputs ? { inputs: args.inputs } : {},
+            );
           case "activate":
             return workflows.named.activateRevision(
               workflowName(args),
