@@ -280,17 +280,24 @@ function listed(lines: string[], noun: string): string[] {
 
 type NamedRecord = { type: string; name: string };
 
-/** The retract question: the counts, then every link and record it removes, the first 20 of each. */
+/**
+ * The retract question: the counts, then every link and record it removes,
+ * the first 20 of each. With `purge`, a record loses its field values too.
+ */
 export function retractMessage(
   where: string,
   edges: { source: NamedRecord; relation: string; target: NamedRecord }[],
   entities: NamedRecord[],
+  purge = false,
 ): string {
   const record = (r: NamedRecord) => `${oneLine(r.name)} (${oneLine(r.type)})`;
+  const removes = purge
+    ? "every current link and field value"
+    : "every current link";
   const what = joined([
     ...(edges.length ? [counted(edges.length, "link")] : []),
     ...(entities.length
-      ? [`every current link of ${counted(entities.length, "record")}`]
+      ? [`${removes} of ${counted(entities.length, "record")}`]
       : []),
   ]);
   return [
@@ -303,10 +310,15 @@ export function retractMessage(
       "links",
     ),
     ...listed(
-      entities.map((entity) => `- every current link of ${record(entity)}`),
+      entities.map((entity) => `- ${removes} of ${record(entity)}`),
       "records",
     ),
     "The records and their history stay readable in as_of reads.",
+    ...(purge && entities.length
+      ? [
+          "On a graph that stores RDF, a record that is left with no link and no field loses its type and label too.",
+        ]
+      : []),
   ].join("\n");
 }
 

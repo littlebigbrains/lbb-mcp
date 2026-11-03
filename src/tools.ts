@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { LbbClient, type Schemas } from "@littlebigbrain/client";
+import { LbbClient, LbbError, type Schemas } from "@littlebigbrain/client";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
 import {
@@ -108,6 +108,26 @@ function serverAcceptsRunInputIri(iri: string): boolean {
     Buffer.byteLength(iri, "utf8") <= 2048 &&
     /^(?:https?:\/\/|urn:)/.test(iri) &&
     !/[\s<>"{}|\\^`]/u.test(iri)
+  );
+}
+
+/**
+ * The refusal of `entity_embeddings` by a graph that stores RDF (every new
+ * graph), in this tool's words. Any other error passes through.
+ */
+function vectorsRefused(
+  error: unknown,
+  vectors: unknown[] | undefined,
+): unknown {
+  if (
+    !vectors?.length ||
+    !(error instanceof LbbError) ||
+    error.code !== "rdf_native_graph"
+  )
+    return error;
+  return new ToolError(
+    "rdf_native_graph",
+    "entity_embeddings are not accepted on this graph. A new graph stores RDF statements, and the platform embeds text with a managed model, so a caller cannot write its own vectors. Declare an embedding on a class with lbb_embeddings_manage action=declare (lbb_embeddings action=preview first), then search with lbb_query mode=search. Nothing was written.",
   );
 }
 
@@ -2533,7 +2553,7 @@ export function registerLbbTools(
   host.register(
     "lbb_commit",
     {
-      description: `Write graph facts, retract them, or label ranked results. Explicit mode=records forwards a strict records/1 body, with exact IRIs/terms and the original receipt. It requires an existing support-enabled graph; protocol recognition never activates or converts a graph. Record edits that may remove support (set/unset/remove/delete/replace_scope or asserted=false) ask for approval. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset; mode=search_feedback stores query/result relevance labels (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills. A retract asks the person to approve the links and records it removes first. ${APPROVAL_TEXT}`,
+      description: `Write graph facts, retract them, or label ranked results. Explicit mode=records forwards a strict records/1 body, with exact IRIs/terms and the original receipt. It requires an existing support-enabled graph; protocol recognition never activates or converts a graph. Record edits that may remove support (set/unset/remove/delete/replace_scope or asserted=false) ask for approval. mode=facts writes triplets/embeddings/properties; mode=retract removes a wrongly-added fact (by edge or by entity) without a full reset, and removes whole records with purge_entity_properties; mode=search_feedback stores query/result relevance labels (Feedback grades: 3=ideal/good, 1=partial, 0=bad; include query, search_id when available, target, rank, score). Explicit idempotency_key wins; when omitted, MCP derives a stable content hash so content-identical retries dedupe. Facts mode defaults edge_idempotency to append; pass skip_unchanged for re-runnable backfills. Facts mode adds facts on every graph. On a graph that stores RDF (every new graph) it also replaces the other values of a field it sets, the label of a record it names and the target of a relation that keeps one target (whoever wrote them), and a link written twice is one statement; history stays readable. There, a link with confidence or valid time needs evidence (they are stored on it), observed_at needs evidence on each link, and entity_embeddings and preconditions are refused with the reason. On a graph that stores RDF, retract_entities needs purge_entity_properties, because a record there has no state of links only; it loses all its statements, and a record left with no link and no field because of it loses its type and label too. retract_edges works on every graph. A retract asks the person to approve the links and records it removes first. ${APPROVAL_TEXT}`,
       inputSchema: {
         idempotency_key: z.string().optional(),
         mode: z
@@ -2620,7 +2640,13 @@ export function registerLbbTools(
           .array(z.object({ type: z.string(), name: z.string() }))
           .optional()
           .describe(
-            "mode=retract: entities whose every current edge is removed (a current-state tombstone; the record and its history are kept for as_of reads).",
+            "mode=retract: entities whose every current edge is removed (a current-state tombstone; the record and its history are kept for as_of reads). With purge_entity_properties the record's field values go too.",
+          ),
+        purge_entity_properties: z
+          .boolean()
+          .optional()
+          .describe(
+            "mode=retract: also clear the field values of retract_entities, so each record leaves the current graph whole (its history stays readable with as_of reads). Required for retract_entities on a graph that stores RDF, where retracting a record removes all of its statements: links, field values, type and label.",
           ),
         ...graphScope,
       },
@@ -2642,6 +2668,7 @@ export function registerLbbTools(
         edge_idempotency,
         retract_edges,
         retract_entities,
+        purge_entity_properties,
         graph,
       },
       extra,
@@ -2673,6 +2700,7 @@ export function registerLbbTools(
             edge_idempotency,
             retract_edges,
             retract_entities,
+            purge_entity_properties,
           ].some((value) => value !== undefined),
         });
       }
@@ -2693,6 +2721,7 @@ export function registerLbbTools(
             graphLabel(client, graph),
             retract_edges ?? [],
             retract_entities ?? [],
+            purge_entity_properties === true,
           ),
         });
         if (refused) return refused;
@@ -2710,11 +2739,24 @@ export function registerLbbTools(
               "lbb_commit mode=retract requires retract_edges or retract_entities",
             );
           }
+          const purge = purge_entity_properties === true && entities.length > 0;
           const key =
             idempotency_key ??
-            contentHashKey({ graph }, { mode: "retract", edges, entities });
+            contentHashKey(
+              { graph },
+              {
+                mode: "retract",
+                edges,
+                entities,
+                ...(purge ? { purge_entity_properties: true } : {}),
+              },
+            );
           return scoped(client, graph).retract(
-            { edges, entities },
+            {
+              edges,
+              entities,
+              ...(purge ? { purge_entity_properties: true } : {}),
+            },
             { idempotencyKey: key },
           );
         }
@@ -2764,10 +2806,17 @@ export function registerLbbTools(
           );
         }
         const key = idempotency_key ?? contentHashKey({ graph }, payload);
-        if (dry_run) return scoped(client, graph).commitDryRun(payload);
-        return scoped(client, graph).commit(payload, {
-          idempotencyKey: key,
-        });
+        if (dry_run)
+          return scoped(client, graph)
+            .commitDryRun(payload)
+            .catch((error: unknown) => {
+              throw vectorsRefused(error, entity_embeddings);
+            });
+        return scoped(client, graph)
+          .commit(payload, { idempotencyKey: key })
+          .catch((error: unknown) => {
+            throw vectorsRefused(error, entity_embeddings);
+          });
       });
     },
   );
