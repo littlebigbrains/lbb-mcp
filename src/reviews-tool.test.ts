@@ -152,7 +152,7 @@ test("lbb_reviews_manage create files an item with an idempotency key", async ()
         },
         evidence: [
           {
-            quote: "Fläche 12,5 m²",
+            quote: "Area 12.5 m²",
             source_id: "https://example.com/plan.pdf#page=3",
             region: {
               page: 2,
@@ -185,7 +185,7 @@ test("lbb_reviews_manage create files an item with an idempotency key", async ()
       subject: { type: "Room", name: "R 1.04" },
       evidence: [
         {
-          quote: "Fläche 12,5 m²",
+          quote: "Area 12.5 m²",
           source_id: "https://example.com/plan.pdf#page=3",
           region: {
             page: 2,
