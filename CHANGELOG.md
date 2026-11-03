@@ -2,6 +2,27 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## 0.18.1 (2026-11-03)
+
+- Requires `@littlebigbrain/client` `^0.33.1`, which writes to a graph that
+  stores RDF statements.
+- `lbb_commit` with `mode=facts` and its `dry_run` add facts to a graph that
+  stores RDF statements, as every new graph does. The commit removes no link or
+  field that it does not name. It replaces the other values of a field it sets,
+  the label of a record it names and the target of a relation that keeps one
+  target, as on a graph of records. A link with `confidence` or `valid_time`
+  needs `evidence` there, which stores them. The behavior comes from
+  `@littlebigbrain/client` 0.33.1.
+- `lbb_commit` has `purge_entity_properties`. With `retract_entities` it also
+  clears the field values of each record, so the record leaves the current
+  graph whole. A graph that stores RDF needs it for `retract_entities`, because
+  a record there has no state of links only. The question to the person says
+  when the records lose their field values, and that a record left with no link
+  and no field loses its type and label too.
+- `entity_embeddings` on a graph that stores RDF is refused with
+  `rdf_native_graph` and a message that names `lbb_embeddings_manage` and
+  `lbb_query` `mode=search`. Nothing is written.
+
 ## 0.18.0 (2026-11-02)
 
 - Requires `@littlebigbrain/client` `^0.33.0`, which has the `inputs` option of

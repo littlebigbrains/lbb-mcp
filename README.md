@@ -175,10 +175,16 @@ See [search by meaning](https://docs.littlebigbrain.com/guides/search-by-meaning
 for embedding setup. To define constraints with the Shapes Constraint Language
 (SHACL), see [query and validation](https://docs.littlebigbrain.com/guides/sparql-and-shacl/).
 
-Legacy `mode=facts` follows the graph's existing first-write restrictions; a
-graph first written through `lbb_rdf` refuses that legacy JSON path. Explicit
-`mode=records` uses the separate versioned contract described below and does not
-activate or convert an existing graph. RDF updates support additive `INSERT DATA`;
+`mode=facts` adds facts to every graph. On a new graph, which stores RDF
+statements, it removes no link or field that it does not name. It replaces the
+other values of a field it sets, the label of a record it names and the target of
+a relation that keeps one target. A link with `confidence` or `valid_time` needs
+`evidence` there, which stores them. `mode=retract` with `retract_entities` needs
+`purge_entity_properties: true` on such a graph and removes each record whole; a
+record left with no link and no field because of it loses its type and label too,
+and the question to the person says so. `retract_edges` works on every graph.
+`entity_embeddings` is refused there, with the reason in the error. Explicit `mode=records` uses the separate versioned
+contract described below and does not activate or convert an existing graph. RDF updates support additive `INSERT DATA`;
 see the [RDF guide](https://docs.littlebigbrain.com/guides/load-rdf/) for format and
 update limits.
 
