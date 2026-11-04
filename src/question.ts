@@ -108,6 +108,10 @@ interface QuestionChart {
   x?: string | null;
   y?: string | null;
   series?: string | null;
+  /** Plain words for the reader, when the model gave them and they fit. */
+  title?: string | null;
+  x_label?: string | null;
+  y_label?: string | null;
 }
 
 interface QuestionResponse {
