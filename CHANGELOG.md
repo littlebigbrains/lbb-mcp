@@ -433,7 +433,7 @@ rewrite.
   that searches by meaning with a `search:similarTo` pattern: the plan, the
   hits asked for and bound, and `complete`. When `complete` is false, `notes`
   says so. The `query` argument describes the pattern with an example.
-- Add `activity` to `lbb_models`. It reads one month of the stack's
+- Add `activity` to `lbb_models`. It reads one month of the environment's
   managed-model use (`month`, `yyyy-mm`; the current month by default): calls,
   items, estimated tokens and cost per feature and model, by day and by
   graph, and the model each feature uses now.

@@ -14,16 +14,16 @@ rules.
 
 ## Connect
 
-Create a stack in the [console](https://cloud.littlebigbrain.com), then choose a
+Create an environment in the [console](https://cloud.littlebigbrain.com), then choose a
 hosted connection or a local process.
 
 ### Hosted connection
 
 For clients that support remote MCP with OAuth, use this URL and sign in with
-your little big brain account. Replace `<stack-slug>` with your stack's slug:
+your little big brain account. Replace `<environment-slug>` with your environment's slug:
 
 ```text
-https://mcp.littlebigbrain.com/mcp/<stack-slug>
+https://mcp.littlebigbrain.com/mcp/<environment-slug>
 ```
 
 For clients that use an `mcpServers` JSON configuration:
@@ -32,20 +32,20 @@ For clients that use an `mcpServers` JSON configuration:
 {
   "mcpServers": {
     "lbb": {
-      "url": "https://mcp.littlebigbrain.com/mcp/<stack-slug>"
+      "url": "https://mcp.littlebigbrain.com/mcp/<environment-slug>"
     }
   }
 }
 ```
 
-This connection uses account sign-in and does not require a stack API key.
+This connection uses account sign-in and does not require an environment API key.
 The [connection guide](https://docs.littlebigbrain.com/sdks/mcp/#hosted-streamable-http-oauth)
 includes client-specific setup, including the origin URL and `X-LBB-Stack` header
 for Codex.
 
 ### Local process
 
-Requires Node.js 18+. Copy the complete endpoint and a stack API key from
+Requires Node.js 18+. Copy the complete endpoint and an environment API key from
 **Connect** in the console, then add them to your client's MCP configuration:
 
 ```json
@@ -56,7 +56,7 @@ Requires Node.js 18+. Copy the complete endpoint and a stack API key from
       "args": ["-y", "@littlebigbrain/mcp"],
       "env": {
         "LBB_BASE_URL": "https://<your-complete-stack-host>",
-        "LBB_API_KEY": "<your-stack-api-key>"
+        "LBB_API_KEY": "<your-environment-api-key>"
       }
     }
   }
@@ -125,7 +125,7 @@ their rows, and answers. The result holds `answer` (`text`, `citations`, the
 IRIs the answer names, and `chart`, how to draw the rows, when the server
 gave one), `steps`, the route, and the query and rows the answer stands on. `next` continues that query with `mode: "sparql"`. A
 question takes about 8 s. Each question uses model tokens and counts toward a
-daily limit of the stack, so the tool does not retry a failed call.
+daily limit of the environment, so the tool does not retry a failed call.
 
 The server finds the names in the question in the graph and lists them in
 `linked`. When the question is about records you already know, pass their
@@ -279,7 +279,7 @@ createMcpHttpServer({
 }).listen(8080, "127.0.0.1");
 ```
 
-Clients connect to `http://127.0.0.1:8080/mcp` and send a stack API key in
+Clients connect to `http://127.0.0.1:8080/mcp` and send an environment API key in
 `Authorization: Bearer <key>`. See the
 [Node.js integration guide](https://docs.littlebigbrain.com/sdks/mcp/#embed-in-a-node-process)
 for HTTP options and integration with an existing MCP server.
