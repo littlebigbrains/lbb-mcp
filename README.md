@@ -55,7 +55,7 @@ Requires Node.js 18+. Copy the complete endpoint and an environment API key from
       "command": "npx",
       "args": ["-y", "@littlebigbrain/mcp"],
       "env": {
-        "LBB_BASE_URL": "https://<your-complete-stack-host>",
+        "LBB_BASE_URL": "https://<your-complete-environment-host>",
         "LBB_API_KEY": "<your-environment-api-key>"
       }
     }
