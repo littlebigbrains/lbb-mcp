@@ -21,6 +21,7 @@ import { registerRdfTool } from "./rdf-tool.js";
 import { commitRecordsTool } from "./records-write.js";
 import { registerFilesTool } from "./files-tool.js";
 import { registerReviewsTools } from "./reviews-tool.js";
+import { registerSandboxesTools, sandboxesEnabled } from "./sandboxes-tool.js";
 import {
   APPROVAL_TEXT,
   graphLabel,
@@ -140,6 +141,7 @@ export function registerLbbTools(
   registerRdfTool(host, client);
   registerFilesTool(host, client);
   registerReviewsTools(host, client);
+  if (sandboxesEnabled(options.sandboxes)) registerSandboxesTools(host, client);
   host.register(
     "lbb_inspect",
     {

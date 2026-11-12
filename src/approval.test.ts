@@ -27,7 +27,7 @@ async function setup(
       calls.push({ input, init: init ?? {} });
       return fetch ? fetch(input, init) : ok({ deleted: true });
     },
-    options,
+    { sandboxes: true, ...options },
     answer
       ? (params) => {
           asked.push(params);
@@ -51,7 +51,36 @@ function writes(calls: Call[]): Call[] {
   return calls.filter((call) => (call.init.method ?? "GET") !== "GET");
 }
 
-const deletes = [
+/** The record a sandbox route answers, for the calls that read it. */
+const sandboxFetch: FetchLike = async () =>
+  ok({
+    id: "sbx_0000000000001",
+    object: "sandbox",
+    status: "running",
+    template: { id: "sbt_lbb_python", name: "lbb/python" },
+    created: 1,
+    created_by: "key:k1",
+    expires_at: 2,
+    auto_stop_seconds: 300,
+    kind: "sandbox",
+    limits: { vcpus: 1, memory_mib: 1024, disk_mib: 4096 },
+    metadata: {},
+    usage: { vcpu_seconds: 0, memory_gib_seconds: 0, disk_gib_seconds: 0 },
+  });
+
+/** A destructive call as the agent sends it. */
+interface Delete {
+  name: string;
+  arguments: Record<string, unknown>;
+  route: RegExp;
+  asks: RegExp;
+  /** The requests that read before the question (a sandbox is read to be named). */
+  reads?: number;
+  /** The fake server's answers, when the default one does not fit. */
+  fetch?: FetchLike;
+}
+
+const deletes: Delete[] = [
   {
     name: "lbb_embeddings_delete",
     arguments: { name: "service" },
@@ -85,6 +114,14 @@ const deletes = [
     route:
       /^DELETE http:\/\/h\/v1\/workflows\/named\?.*name=areas&confirm=areas/,
     asks: /^Delete the workflow with triggers "areas" of graph "g"\? Its shards stay\.$/,
+  },
+  {
+    name: "lbb_sandboxes_delete",
+    arguments: { sandbox: "sbx_0000000000001" },
+    route: /^DELETE http:\/\/h\/v1\/sandboxes\?.*id=sbx_0000000000001/,
+    asks: /^Destroy the sandbox sbx_0000000000001 \(template lbb\/python, running\) of graph "g"\? Its running commands end and its workspace is deleted\. This cannot be undone\./,
+    reads: 1,
+    fetch: sandboxFetch,
   },
 ];
 
@@ -127,8 +164,16 @@ const shapes = {
 };
 
 /** Every destructive call, each as the agent sends it. */
-const destructive = [
-  ...deletes.map(({ name, arguments: args }) => ({ name, arguments: args })),
+const destructive: {
+  name: string;
+  arguments: Record<string, unknown>;
+  fetch?: FetchLike;
+}[] = [
+  ...deletes.map(({ name, arguments: args, fetch }) => ({
+    name,
+    arguments: args,
+    fetch,
+  })),
   { name: "lbb_commit", arguments: retract },
   { name: "lbb_rdf", arguments: { action: "update", update: removingUpdate } },
   { name: "lbb_configure", arguments: removing },
@@ -140,7 +185,11 @@ const destructive = [
 
 test("a delete the person approves is sent, with a question that names it", async () => {
   for (const call of deletes) {
-    const { client, calls, asked } = await setup(approve);
+    const { client, calls, asked } = await setup(
+      approve,
+      undefined,
+      call.fetch,
+    );
     try {
       const result = await client.callTool({
         name: call.name,
@@ -160,12 +209,11 @@ test("a delete the person approves is sent, with a question that names it", asyn
       ).requestedSchema;
       assert.equal(schema.properties.confirm.type, "boolean");
       assert.deepEqual(schema.required, ["confirm"]);
-      assert.equal(calls.length, 1, call.name);
-      assert.match(
-        `${calls[0].init.method} ${calls[0].input}`,
-        call.route,
-        call.name,
-      );
+      // The reads that name what the question deletes, then the one write.
+      assert.equal(calls.length, 1 + (call.reads ?? 0), call.name);
+      assert.equal(writes(calls).length, 1, call.name);
+      const last = calls[calls.length - 1];
+      assert.match(`${last.init.method} ${last.input}`, call.route, call.name);
     } finally {
       await client.close();
     }
@@ -179,7 +227,11 @@ test("a delete the person declines or cancels sends nothing", async () => {
     { action: "accept", content: { confirm: false } },
   ] as ElicitResult[]) {
     for (const call of deletes) {
-      const { client, calls, asked } = await setup(answer);
+      const { client, calls, asked } = await setup(
+        answer,
+        undefined,
+        call.fetch,
+      );
       try {
         const result = await client.callTool({
           name: call.name,
@@ -189,7 +241,9 @@ test("a delete the person declines or cancels sends nothing", async () => {
         assert.equal(errorOf(result).code, "approval_declined");
         assert.match(errorOf(result).message, /declined, so nothing was sent/);
         assert.equal(asked.length, 1);
-        assert.deepEqual(calls, [], `${call.name} sends nothing`);
+        // Nothing is written, and only the reads that name the question are sent.
+        assert.deepEqual(writes(calls), [], `${call.name} writes nothing`);
+        assert.equal(calls.length, call.reads ?? 0, call.name);
       } finally {
         await client.close();
       }
@@ -250,7 +304,7 @@ test("a client with URL elicitation only cannot be asked, so the call is refused
       calls.push({ input, init: init ?? {} });
       return ok({});
     },
-    undefined,
+    { sandboxes: true },
     () => {
       asked += 1;
       return approve;
@@ -271,11 +325,16 @@ test("a client with URL elicitation only cannot be asked, so the call is refused
 
 test("LBB_MCP_DESTRUCTIVE=allow sends a destructive call without a question", async () => {
   for (const call of destructive) {
-    const { client, calls } = await setup(undefined, {
-      destructiveWithoutApproval: "allow",
-    });
+    const { client, calls } = await setup(
+      undefined,
+      { destructiveWithoutApproval: "allow" },
+      call.fetch,
+    );
     try {
-      const result = await client.callTool(call);
+      const result = await client.callTool({
+        name: call.name,
+        arguments: call.arguments,
+      });
       assert.notEqual(result.isError, true, JSON.stringify(result));
       assert.equal(writes(calls).length, 1, call.name);
     } finally {
@@ -312,27 +371,29 @@ test("LBB_MCP_DESTRUCTIVE=allow sends a destructive call without a question", as
 });
 
 test("an approval request that fails sends nothing", async () => {
-  const calls: Call[] = [];
-  const client = await connect(
-    async (input, init) => {
-      calls.push({ input, init: init ?? {} });
-      return ok({});
-    },
-    undefined,
-    () => {
-      throw new Error("the form could not open");
-    },
-  );
-  try {
-    const result = await client.callTool({
-      name: "lbb_embeddings_delete",
-      arguments: { name: "service" },
-    });
-    assert.equal(result.isError, true);
-    assert.equal(errorOf(result).code, "approval_failed");
-    assert.deepEqual(calls, []);
-  } finally {
-    await client.close();
+  for (const call of [deletes[0], deletes[deletes.length - 1]]) {
+    const calls: Call[] = [];
+    const client = await connect(
+      async (input, init) => {
+        calls.push({ input, init: init ?? {} });
+        return (call.fetch ?? (async () => ok({})))(input, init);
+      },
+      { sandboxes: true },
+      () => {
+        throw new Error("the form could not open");
+      },
+    );
+    try {
+      const result = await client.callTool({
+        name: call.name,
+        arguments: call.arguments,
+      });
+      assert.equal(result.isError, true, call.name);
+      assert.equal(errorOf(result).code, "approval_failed", call.name);
+      assert.deepEqual(writes(calls), [], call.name);
+    } finally {
+      await client.close();
+    }
   }
 });
 
@@ -1139,6 +1200,48 @@ test("every tool call is logged with its approval decision, and no texts", async
   } finally {
     await approved.client.close();
   }
+  // The sandbox delete logs each decision the same way: declined, cancelled,
+  // a form that failed, no form, the setting, and a yes.
+  const sandboxCall = {
+    name: "lbb_sandboxes_delete",
+    arguments: { sandbox: "sbx_0000000000001" },
+  };
+  for (const answer of [
+    { action: "decline" },
+    { action: "cancel" },
+    approve,
+  ] as ElicitResult[]) {
+    const asked = await setup(answer, { log }, sandboxFetch);
+    try {
+      await asked.client.callTool(sandboxCall);
+    } finally {
+      await asked.client.close();
+    }
+  }
+  const failing = await connect(sandboxFetch, { sandboxes: true, log }, () => {
+    throw new Error("the form could not open");
+  });
+  try {
+    await failing.callTool(sandboxCall);
+  } finally {
+    await failing.close();
+  }
+  const noForm = await setup(undefined, { log }, sandboxFetch);
+  try {
+    await noForm.client.callTool(sandboxCall);
+  } finally {
+    await noForm.client.close();
+  }
+  const bySetting = await setup(
+    undefined,
+    { log, destructiveWithoutApproval: "allow" },
+    sandboxFetch,
+  );
+  try {
+    await bySetting.client.callTool(sandboxCall);
+  } finally {
+    await bySetting.client.close();
+  }
 
   assert.deepEqual(
     events.map(({ request_id, ...event }) => {
@@ -1189,10 +1292,50 @@ test("every tool call is logged with its approval decision, and no texts", async
         outcome: "ok",
         approval: "approved",
       },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "error",
+        code: "approval_declined",
+        approval: "declined",
+      },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "error",
+        code: "approval_declined",
+        approval: "cancelled",
+      },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "ok",
+        approval: "approved",
+      },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "error",
+        code: "approval_failed",
+        approval: "failed",
+      },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "error",
+        code: "approval_required",
+        approval: "unavailable",
+      },
+      {
+        event: "mcp_tool_call",
+        tool: "lbb_sandboxes_delete",
+        outcome: "ok",
+        approval: "allowed_by_setting",
+      },
     ],
   );
   // No argument, name or text reaches the log.
-  assert.doesNotMatch(JSON.stringify(events), /service|Acme|Lead|crm/);
+  assert.doesNotMatch(JSON.stringify(events), /service|Acme|Lead|crm|sbx_/);
 });
 
 test("the destructive tools are marked destructive and take no confirm", async () => {
@@ -1200,13 +1343,28 @@ test("the destructive tools are marked destructive and take no confirm", async (
   try {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-    for (const name of ["lbb_commit", "lbb_configure", "lbb_reviews_manage"]) {
+    for (const name of [
+      "lbb_commit",
+      "lbb_configure",
+      "lbb_reviews_manage",
+      "lbb_sandboxes_manage",
+    ]) {
       assert.equal(byName[name]?.annotations?.destructiveHint, true, name);
       assert.equal(byName[name]?.annotations?.readOnlyHint, false, name);
     }
     // lbb_configure and lbb_reviews_manage are not idempotent: a suggestion
     // or an item without a key files a new one.
     assert.equal(byName.lbb_configure?.annotations?.idempotentHint, undefined);
+    // lbb_sandboxes_manage is marked destructive too, asks nobody, and a
+    // call without a key runs again.
+    assert.equal(
+      byName.lbb_sandboxes_manage?.annotations?.idempotentHint,
+      undefined,
+    );
+    assert.doesNotMatch(
+      byName.lbb_sandboxes_manage?.description ?? "",
+      /LBB_MCP_DESTRUCTIVE/,
+    );
     assert.match(byName.lbb_configure?.description ?? "", /remove_entity_type/);
     for (const name of [
       "lbb_embeddings_delete",
@@ -1217,6 +1375,7 @@ test("the destructive tools are marked destructive and take no confirm", async (
       "lbb_rdf",
       "lbb_configure",
       "lbb_reviews_manage",
+      "lbb_sandboxes_delete",
     ]) {
       const tool = byName[name];
       const schema = tool?.inputSchema as {
