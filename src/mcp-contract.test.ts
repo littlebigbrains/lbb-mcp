@@ -290,7 +290,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "93d1b4d7eed5a0cd56b097f9cb9f5077745ee72f9cf2d25e6fc67576368e19ca",
+    "dde41879622bf32c96fd0d16719cc778aa4fdebb6704e3cbb6267b3c1d595708",
   );
   await client.close();
 });
@@ -446,4 +446,77 @@ test("lbb_query documents the real structured FILTER shape with a runnable examp
     "drops the wrong { filter: { property }, op, value } shape that the server rejects",
   );
   await client.close();
+});
+
+/** The digest of the contract of `tools`, as the pin above computes it. */
+function contractDigest(
+  tools: {
+    name: string;
+    title?: string;
+    description?: string;
+    inputSchema?: unknown;
+    outputSchema?: unknown;
+    annotations?: unknown;
+  }[],
+): string {
+  const contract = tools
+    .map(
+      ({
+        name,
+        title,
+        description,
+        inputSchema,
+        outputSchema,
+        annotations,
+      }) => ({
+        name,
+        title,
+        description,
+        inputSchema,
+        outputSchema,
+        annotations,
+      }),
+    )
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(contract)))
+    .digest("hex");
+}
+
+test("the sandbox tools are registered only when asked, and pinned when they are", async () => {
+  const sandboxTools = [
+    "lbb_sandboxes",
+    "lbb_sandboxes_delete",
+    "lbb_sandboxes_manage",
+  ];
+  const off = await connect(async () => ok());
+  const on = await connect(async () => ok(), { sandboxes: true });
+  try {
+    const offTools = (await off.listTools()).tools;
+    const onTools = (await on.listTools()).tools;
+    const isSandbox = (tool: { name: string }) =>
+      sandboxTools.includes(tool.name);
+    // Off: none of the three. The default state is the one the pin of
+    // "the public MCP server identity and complete tool contract" covers.
+    assert.deepEqual(offTools.filter(isSandbox), []);
+    // On: the same tools as before, and the three.
+    assert.deepEqual(
+      onTools
+        .filter(isSandbox)
+        .map((tool) => tool.name)
+        .sort(),
+      sandboxTools,
+    );
+    assert.equal(
+      contractDigest(onTools.filter((tool) => !isSandbox(tool))),
+      contractDigest(offTools),
+    );
+    assert.equal(
+      contractDigest(onTools.filter(isSandbox)),
+      "fe25d8a50dd47fbc450e01115bc9d4290623f85d77ece68a82ecd67181903b48",
+    );
+  } finally {
+    await off.close();
+    await on.close();
+  }
 });
