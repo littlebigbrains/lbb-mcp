@@ -164,6 +164,9 @@ its original identifiers; inspect it with SPARQL when choosing query predicates.
 | `lbb_workflows_manage` | Create a workflow from a starter workflow on a class (a developer workflow with its workflow type, owned outputs and batch), ask it to run now, or pause and resume a developer workflow. Define a workflow with triggers of your worker (shards, routing field, window) and run it now. |
 | `lbb_workflows_delete` | Delete a triggered workflow, or a workflow with triggers by its name. What it wrote stays. |
 | `lbb_files` | List the files of a graph, all or by parse status or a part of the name, and read the parsed pages of one: each line with its id, its box on the page and its text. |
+| `lbb_sandboxes` | Read sandboxes, saved templates, commands and their output, and the files of a sandbox's workspace. Registered with `LBB_MCP_SANDBOXES=1`; needs a server with a sandbox backend (see [Sandboxes](#sandboxes)). |
+| `lbb_sandboxes_manage` | Run code in one call, make, change, stop and resume a sandbox, save a template, start or cancel a command, and write or delete workspace files. |
+| `lbb_sandboxes_delete` | Destroy a sandbox, once the person approves. |
 | `lbb_commit` | Write legacy JSON facts, explicitly commit versioned records, retract facts, or record search feedback. |
 | `lbb_configure` | Define record types and relationships, list and apply ontology starters (CRM, documents, work), publish validation rules, or keep the graph's notes and worked examples for questions in plain words (`get_rewrite_profile`, `set_rewrite_profile`). |
 | `lbb_evals` | Label query results and check whether later queries return the expected answers. Read the model checks of a graph, and agree with or correct a check that the user confirmed. |
@@ -188,6 +191,31 @@ contract described below and does not activate or convert an existing graph. RDF
 see the [RDF guide](https://docs.littlebigbrain.com/guides/load-rdf/) for format and
 update limits.
 
+
+## Sandboxes
+
+A sandbox runs code in an isolated workspace with its own disk and no network. Access to
+sandboxes opens by invitation, and capacity is limited.
+[Join the waitlist](https://littlebigbrain.com/product/sandboxes/#waitlist). An environment without sandboxes answers every sandbox
+tool with `sandbox_not_enabled` and runs nothing.
+
+The server registers the three sandbox tools only when `LBB_MCP_SANDBOXES=1` is set. They
+are off by default. The published package may not have them yet.
+
+`lbb_sandboxes_manage` with `action: "run"` makes a sandbox, calls
+`run(input, config)` with the `code` and `input` you send, and destroys the sandbox when
+the run ends. Check `ok` before you use `result`. A run whose code raised an exception
+comes back with `ok: false` and the end of its output. `create` makes a sandbox that you
+keep, and `commands_create`, `files_write` and `files_read` work on it. Each call that
+runs code sends an idempotency key and returns it, also in an error. When the outcome is
+unknown, send the same `idempotency_key` to find the same run. A one-call run whose
+sandbox was lost goes again under the next key, twice at most. A command on a sandbox you
+keep never goes again. A tool takes only the arguments of its action. The tool
+`lbb_sandboxes_manage` is marked destructive: `files_delete` cannot be undone and `stop`
+ends running commands. `lbb_sandboxes_delete` asks the person to approve first.
+
+The guide [Run code in a sandbox](https://docs.littlebigbrain.com/guides/sandboxes/)
+has the levels and the limits.
 
 ## Versioned records commits
 
