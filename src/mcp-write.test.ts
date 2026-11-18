@@ -867,6 +867,44 @@ test("lbb_evals run_answers sends the app's answers and results reads its series
   await client.close();
 });
 
+test("lbb_evals diagnose and diagnosis name the call", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ call: "c1", cause: "present_not_found" });
+  };
+  const client = await connect(fetch);
+
+  const diagnosed = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "diagnose", call_id: "c1" },
+  });
+  const read = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "diagnosis", call_id: "c1", graph: "crm" },
+  });
+  const missing = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "diagnose" },
+  });
+
+  assert.notEqual(diagnosed.isError, true);
+  assert.notEqual(read.isError, true);
+  assert.equal(missing.isError, true);
+  assert.equal(calls.length, 2);
+  const [first, second] = calls.map((call) => new URL(call.input));
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(first.pathname, "/v1/models/checks/diagnose");
+  assert.deepEqual(Object.fromEntries(first.searchParams), {
+    graph: "g",
+    call: "c1",
+  });
+  assert.equal(calls[1].init.method, "GET");
+  assert.equal(second.pathname, "/v1/models/checks/diagnosis");
+  assert.equal(second.searchParams.get("graph"), "crm");
+  await client.close();
+});
+
 test("lbb_evals review_check agrees with the judge or corrects it", async () => {
   const calls: Call[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -1021,11 +1059,16 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
       effort: "low",
       jobs: ["ask"],
       target: 20,
+      max_cost_usd: 10,
     },
   });
   await client.callTool({
     name: "lbb_model_choice_manage",
     arguments: { action: "stop", trial_id: "t1" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "limit", trial_id: "t1", max_cost_usd: 12.5 },
   });
   await client.callTool({
     name: "lbb_model_choice_manage",
@@ -1050,6 +1093,7 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
     [
       "POST /v1/models/trials?graph=g",
       "POST /v1/models/trials/stop?graph=g&id=t1",
+      "POST /v1/models/trials/limit?graph=g&id=t1",
       "POST /v1/models/switches?graph=crm",
       "POST /v1/models/switches/revert?graph=g&job=ask",
     ],
@@ -1062,8 +1106,12 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
     },
     jobs: ["ask"],
     target: 20,
+    max_cost_usd: 10,
   });
-  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), { trial: "t1" });
+  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), {
+    max_cost_usd: 12.5,
+  });
+  assert.deepEqual(JSON.parse(calls[3].init.body ?? "{}"), { trial: "t1" });
   await client.close();
 });
 
