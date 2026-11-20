@@ -59,6 +59,13 @@ export interface LbbServerOptions {
    * environment sets LBB_MCP_DESTRUCTIVE=allow, else "refuse".
    */
   destructiveWithoutApproval?: "refuse" | "allow";
+  /**
+   * Register the sandbox tools (`lbb_sandboxes`, `lbb_sandboxes_manage`,
+   * `lbb_sandboxes_delete`). They work only against a server that runs a
+   * sandbox backend, which no hosted service does today. Default: on when the
+   * environment sets LBB_MCP_SANDBOXES=1, else off.
+   */
+  sandboxes?: boolean;
   /** Receives one event per tool call. Default: a JSON line on stderr. */
   log?: (event: Readonly<McpToolCallEvent>) => void;
   /** Query text only; fitting and rendering always use this same format. */
