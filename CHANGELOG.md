@@ -2,6 +2,67 @@
 
 All notable changes to the `@littlebigbrain/mcp` package are documented here.
 
+## Unreleased
+
+- The sandbox tools need a `@littlebigbrain/client` release that has the sandbox
+  calls (`client.sandboxes`). Today those calls are under Unreleased in the client
+  changelog, so the dependency range changes in the release commit, after the
+  client release. A server on an older client starts as before, and the three
+  tools answer with one plain error.
+- Three tools for sandboxes, which run code in an isolated workspace with no
+  network. Access to sandboxes opens by invitation. In an environment without
+  sandboxes every call answers `409 sandbox_not_enabled`, and on a server whose
+  build has no sandbox routes it answers `404 not_found`. The tool says in plain
+  words that nothing ran and how a person joins the waitlist, and keeps the code
+  and the status.
+- The server registers the three tools only when the environment sets
+  `LBB_MCP_SANDBOXES=1` (or the option `sandboxes: true` of `buildLbbServer`). They
+  are off by default, so the tool list is the same as before, because the tools
+  work only against a server that runs a sandbox backend.
+- `lbb_sandboxes` reads. `retrieve` and `list` (filters `status`, `template`,
+  `workflow`, `created_by`, `kind`), `templates_list` and `templates_retrieve`,
+  `commands_list`, `commands_retrieve` and `commands_logs` (one output stream by
+  byte offset, 4 to 12,000 bytes a call), `files_list` and `files_read` (UTF-8
+  text, or base64 for a binary file, 4 to 12,000 bytes a call, with `next` for the
+  following offset).
+- `lbb_sandboxes_manage` writes. `run` is the one-call run: it makes a sandbox,
+  calls `run(input, config)` and destroys the sandbox. The answer has `ok`,
+  `result`, `status`, `exit_code` and the command id. A run whose code raised an
+  exception has `ok: false` and the end of its output. A run that outlives its
+  wait comes back as running with the ids to read it; one call ends within 50
+  seconds, all attempts included, and a cancel of the call stops it at once.
+  `create`, `update`, `stop` and `resume` work on a sandbox you keep.
+  `templates_create` saves a template version. `commands_create` starts `argv` or
+  a `run`, `commands_cancel` ends a command, and `files_write` and `files_delete`
+  change the workspace. The tool is marked destructive (`files_delete` cannot be
+  undone, `stop` ends running commands) and asks no question.
+- `lbb_sandboxes_delete` destroys a sandbox. It asks the person to approve first,
+  with the sandbox, its template and its status in the question, as the other
+  delete tools do. A client that cannot ask gets `approval_required`.
+- Every call that runs code (`run`, `create`, `commands_create`,
+  `templates_create`) sends an idempotency key: yours (`idempotency_key`), else one
+  the tool makes. Every answer of these actions returns the key, also an error. A
+  retry after a `5xx` or a lost connection sends the same key, so the code runs
+  once. When the outcome is unknown, the error says so: send the same key to find
+  the same run. A one-call run whose sandbox the host lost goes again under the
+  key with `.2` and `.3`, twice at most; its key is at most 253 characters. A
+  command on a sandbox you keep never goes again.
+- A tool takes only the arguments of its action and refuses any other before a
+  request: `run` takes no `sandbox` (use `commands_create`), and `update` takes
+  no `expires_in_seconds`. `files_write` refuses text that is not base64.
+- Results keep to the output budget. The result of a run, the end of each output
+  stream and the code of a template are cut to a size that grows with `detail`,
+  and the answer says what it left out. The command record stores `argv` and
+  `code`, so secrets go in `env` or `stdin`; the record keeps the names of `env`
+  and the size of `stdin`, and never their values.
+- The keep of a workspace file as a File and the import of a File into a
+  workspace are not in these tools. They come with the Files rows of the sandbox
+  plan.
+- `lbb_evals` says what a partial eval run means. A run that skipped goldens has
+  `partial: true`, `ran` and `skipped_by`, and its `regression` speaks only for the
+  goldens that ran, so the tool text tells the model to say how many ran and why,
+  and never to call a partial run a pass.
+
 ## 0.18.1 (2026-11-03)
 
 - Requires `@littlebigbrain/client` `^0.33.1`, which writes to a graph that
