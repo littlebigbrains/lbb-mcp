@@ -21,6 +21,7 @@ import { registerRdfTool } from "./rdf-tool.js";
 import { commitRecordsTool } from "./records-write.js";
 import { registerFilesTool } from "./files-tool.js";
 import { registerReviewsTools } from "./reviews-tool.js";
+import { registerSandboxesTools, sandboxesEnabled } from "./sandboxes-tool.js";
 import {
   APPROVAL_TEXT,
   graphLabel,
@@ -48,6 +49,7 @@ import {
   inspectInputSchema,
   inspectWireSchema,
   jsonObjectSchema,
+  namedEntityInputSchema,
   queryInputSchema,
   queryWireSchema,
   reviewAnswerSchema,
@@ -140,6 +142,7 @@ export function registerLbbTools(
   registerRdfTool(host, client);
   registerFilesTool(host, client);
   registerReviewsTools(host, client);
+  if (sandboxesEnabled(options.sandboxes)) registerSandboxesTools(host, client);
   host.register(
     "lbb_inspect",
     {
@@ -1814,11 +1817,12 @@ export function registerLbbTools(
     "lbb_model_choice_manage",
     {
       description:
-        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most the trial budget ($3.00 by default) of model and judge cost; an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model. put_choice chooses the model of a workflow use (use extract or decide, provider, model, effort) for the environment, or for one workflow with workflow: the next calls run it. Pick the model from the row's options in lbb_model_choice action=choices, show the user the price per million tokens of the model in use and of the new one, and set only what the user confirmed. delete_choice removes a choice: the use runs the environment's choice, else its default; it answers {id, object, deleted: true}. Both change only the model of future calls and remove no data, so neither asks for approval.",
+        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most max_cost_usd of model and judge cost (default the server's, $10.00); an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. limit sets a trial's max_cost_usd (above what it spent); a trial that ended at its limit before its target goes on. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model. put_choice chooses the model of a workflow use (use extract or decide, provider, model, effort) for the environment, or for one workflow with workflow: the next calls run it. Pick the model from the row's options in lbb_model_choice action=choices, show the user the price per million tokens of the model in use and of the new one, and set only what the user confirmed. delete_choice removes a choice: the use runs the environment's choice, else its default; it answers {id, object, deleted: true}. Both change only the model of future calls and remove no data, so neither asks for approval.",
       inputSchema: {
         action: z.enum([
           "start",
           "stop",
+          "limit",
           "switch",
           "revert",
           "put_choice",
@@ -1858,10 +1862,18 @@ export function registerLbbTools(
           .max(30)
           .optional()
           .describe("start: the days the trial takes new checks (default 14)."),
+        max_cost_usd: z
+          .number()
+          .positive()
+          .max(100)
+          .optional()
+          .describe(
+            "start / limit: the cost limit of a trial in US dollars (at most 100).",
+          ),
         trial_id: z
           .string()
           .optional()
-          .describe("stop / switch: the trial id."),
+          .describe("stop / limit / switch: the trial id."),
         job: modelUse
           .optional()
           .describe("revert: the use to put back on LBB's model."),
@@ -1902,10 +1914,16 @@ export function registerLbbTools(
               ...(args.jobs ? { jobs: args.jobs } : {}),
               ...(args.target ? { target: args.target } : {}),
               ...(args.days ? { days: args.days } : {}),
+              ...(args.max_cost_usd ? { max_cost_usd: args.max_cost_usd } : {}),
             });
           case "stop":
             if (!args.trial_id) throw new Error("stop requires trial_id");
             return models.trials.stop(args.trial_id);
+          case "limit":
+            if (!args.trial_id || !args.max_cost_usd) {
+              throw new Error("limit requires trial_id and max_cost_usd");
+            }
+            return models.trials.limit(args.trial_id, args.max_cost_usd);
           case "switch":
             if (!args.trial_id) throw new Error("switch requires trial_id");
             return models.switches.create({ trial: args.trial_id });
@@ -1966,7 +1984,7 @@ export function registerLbbTools(
     "lbb_evals",
     {
       description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph. Experiments: two configurations of a workflow, A and B, on the items of a dataset, with the difference of B against A and its 95% interval. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. Each arm runs as a workflow test that writes nothing to the graph and spends model budget; each item is graded against the dataset's labels. experiments_estimate shows the cost first (items, the cost of both arms, the limit, the budget left): call it, show the user the figures, and start only what the user confirmed. experiments_create starts one (workflow, dataset, b, optionally max_items up to 200 and max_cost_usd up to 100, default 5); poll experiment (id) until its status is done, failed or cancelled, and read report.delta with ci_low and ci_high (outcome too_few under 10 items, else better, worse or same) and the item rows. experiments lists them (workflow, dataset, status, one page with next_cursor); experiments_cancel stops one, keeping what it compared. None of them changes the workflow or the graph. To use B, make the change with the experiment's id: lbb_model_choice_manage action=put_choice (or lbb_workflows_manage action=activate) with experiment, after the user confirmed; it fails with experiment_outdated when the workflow moved since.",
+        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. A run that skipped goldens is partial (`partial: true`, `ran` of `total` ran, `skipped_by` says why: model_budget, run_time, daily_eval_budget, no_rewriter, not_asked): its `regression` speaks only for the goldens that ran, so `regression: false` on a partial run is not a pass. Say how many ran and why the others did not, never that the suite passed. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. diagnose finds why an answer of `ask` was weak (call_id) and what to do: at the commit the call read, the judge grades the entities the answer reached, the names the server linked and the hits of one search of the question over the graph. Read outcome first: missed (a relevant entity, best, the answer did not reach), broader_only (the closest match, used, is broader; next step accept_stand_in carries a drafted reference), answered_badly (the answer had relevant data and answered badly), not_in_graph. summary says it in a sentence and next_steps lists what to do (kind, text, iri): add_alias (alias holds the proposed label: the question's words for the entity), tune_search, add_instruction (note holds a drafted note for the Ask instructions, when no query searched by meaning), declare_embedding, accept_stand_in, add_data, keep_as_test, add_source. Show the user the summary and the next steps; act on one only when the user confirms. evidence holds every graded entity; notes holds linking_noise when a linked name is unrelated. It uses the judge and counts on the check budget. diagnosis reads the stored result. Answer tests check a change before anyone applies it: answer_tests_estimate shows the cost (call_id, and step = the index of a next step, or change = {kind: ask_rerank}, {kind: instructions, instructions: {id, version}} or {kind: alias, alias: {iri, label}}, or {kind: instructions, note} to test a note on a draft version, which the test makes and does not publish; guard questions answered right, 0 to 40, default 10; rewordings, default true; replays, default 2; max_cost_usd, default 15): show the user the figures, and start with answer_tests_create only what the user confirmed. A test runs as a workflow: arm A is Ask as it is, arm B is Ask with the change, both answer the question, its rewordings and the guard set, and the judge grades each answer. Poll answer_test (id, atest_…) until status is done, failed or cancelled, then give the user verdict (worked, no_change, worse, too_few), the failed and guard reports and the warnings. A step with no test yet fails with diagnosis_step_untestable. answer_tests lists them (call_id: one call's); answer_tests_cancel stops one. A test changes nothing: the user applies the change with the write that sets it. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph. Experiments: two configurations of a workflow, A and B, on the items of a dataset, with the difference of B against A and its 95% interval. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. Each arm runs as a workflow test that writes nothing to the graph and spends model budget; each item is graded against the dataset's labels. experiments_estimate shows the cost first (items, the cost of both arms, the limit, the budget left): call it, show the user the figures, and start only what the user confirmed. experiments_create starts one (workflow, dataset, b, optionally max_items up to 200 and max_cost_usd up to 100, default 5); poll experiment (id) until its status is done, failed or cancelled, and read report.delta with ci_low and ci_high (outcome too_few under 10 items, else better, worse or same) and the item rows. experiments lists them (workflow, dataset, status, one page with next_cursor); experiments_cancel stops one, keeping what it compared. None of them changes the workflow or the graph. To use B, make the change with the experiment's id: lbb_model_choice_manage action=put_choice (or lbb_workflows_manage action=activate) with experiment, after the user confirmed; it fails with experiment_outdated when the workflow moved since.",
       inputSchema: {
         action: z.enum([
           "summary",
@@ -1985,6 +2003,13 @@ export function registerLbbTools(
           "checks_summary",
           "checks",
           "review_check",
+          "diagnose",
+          "diagnosis",
+          "answer_tests",
+          "answer_test",
+          "answer_tests_estimate",
+          "answer_tests_create",
+          "answer_tests_cancel",
           "datasets",
           "datasets_get",
           "datasets_export",
@@ -2166,7 +2191,9 @@ export function registerLbbTools(
         call_id: z
           .string()
           .optional()
-          .describe("review_check: the check's `call` id, from checks."),
+          .describe(
+            "review_check, diagnose, diagnosis: the check's `call` id, from checks.",
+          ),
         agree: z
           .boolean()
           .optional()
@@ -2190,7 +2217,44 @@ export function registerLbbTools(
           .string()
           .optional()
           .describe(
-            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…). experiment, experiments_cancel: the experiment's id (exp_…).",
+            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…). experiment, experiments_cancel: the experiment's id (exp_…). answer_test, answer_tests_cancel: the test's id (atest_…).",
+          ),
+        step: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "answer_tests_estimate, answer_tests_create: the index of the next step of the call's diagnosis to test.",
+          ),
+        change: jsonObjectSchema
+          .optional()
+          .describe(
+            'answer_tests_estimate, answer_tests_create, in place of step: {"kind": "ask_rerank"}, {"kind": "instructions", "instructions": {"id": "ins_…", "version": "…"}} or {"kind": "alias", "alias": {"iri": "…", "label": "…"}}.',
+          ),
+        guard: z
+          .number()
+          .int()
+          .min(0)
+          .max(40)
+          .optional()
+          .describe(
+            "answer_tests_estimate, answer_tests_create: guard questions answered right (default 10; 0 runs without a guard set).",
+          ),
+        rewordings: z
+          .boolean()
+          .optional()
+          .describe(
+            "answer_tests_estimate, answer_tests_create: the judge's 3 rewordings of the question (default true).",
+          ),
+        replays: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .optional()
+          .describe(
+            "answer_tests_estimate, answer_tests_create: answers per failed question and arm (default 2).",
           ),
         cursor: z
           .string()
@@ -2230,7 +2294,7 @@ export function registerLbbTools(
           .max(100)
           .optional()
           .describe(
-            "experiments_estimate, experiments_create: the cost limit of both arms in US dollars (default 5).",
+            "experiments_estimate, experiments_create: the cost limit of both arms in US dollars (default 5). answer_tests_estimate, answer_tests_create: the cost limit of the test (default 15).",
           ),
         status: z
           .enum(["queued", "running", "done", "failed", "cancelled"])
@@ -2315,6 +2379,11 @@ export function registerLbbTools(
       b,
       max_items,
       max_cost_usd,
+      step,
+      change,
+      guard,
+      rewordings,
+      replays,
       status,
       name,
       kind,
@@ -2464,6 +2533,12 @@ export function registerLbbTools(
               ...(reference ? { reference } : {}),
               ...(note ? { note } : {}),
             });
+          case "diagnose":
+            if (!call_id) throw new Error("diagnose requires call_id");
+            return target.checks.diagnose(call_id);
+          case "diagnosis":
+            if (!call_id) throw new Error("diagnosis requires call_id");
+            return target.checks.diagnosis(call_id);
           case "datasets_get":
             return target.evals.datasets.get(datasetId(id));
           case "datasets_export":
@@ -2491,6 +2566,36 @@ export function registerLbbTools(
             if (!examples?.length)
               throw new Error("datasets_items requires items");
             return target.evals.datasets.addItems(datasetId(id), examples);
+          }
+          case "answer_tests":
+            return target.checks.answerTests.list(
+              call_id ? { call: call_id } : {},
+            );
+          case "answer_test":
+            if (!id) throw new Error("answer_test requires id");
+            return target.checks.answerTests.get(id);
+          case "answer_tests_cancel":
+            if (!id) throw new Error("answer_tests_cancel requires id");
+            return target.checks.answerTests.cancel(id);
+          case "answer_tests_estimate":
+          case "answer_tests_create": {
+            if (!call_id) throw new Error(`${action} requires call_id`);
+            const body = {
+              ...(step !== undefined ? { step } : {}),
+              ...(change
+                ? {
+                    change:
+                      change as Schemas["AnswerTestCreateRequest"]["change"],
+                  }
+                : {}),
+              ...(guard !== undefined ? { guard } : {}),
+              ...(rewordings !== undefined ? { rewordings } : {}),
+              ...(replays !== undefined ? { replays } : {}),
+              ...(max_cost_usd ? { max_cost_usd } : {}),
+            };
+            return action === "answer_tests_estimate"
+              ? target.checks.answerTests.estimate(call_id, body)
+              : target.checks.answerTests.create(call_id, body);
           }
           case "experiment":
             return target.evals.experiments.get(experimentId(id));
@@ -2573,9 +2678,9 @@ export function registerLbbTools(
         triplets: z
           .array(
             z.object({
-              source: z.object({ type: z.string(), name: z.string() }),
+              source: namedEntityInputSchema,
               relation: z.string(),
-              target: z.object({ type: z.string(), name: z.string() }),
+              target: namedEntityInputSchema,
               confidence: z.number().min(0).max(1).optional(),
               evidence: evidenceSchema.nullish(),
               valid_time: z
@@ -2627,9 +2732,9 @@ export function registerLbbTools(
         retract_edges: z
           .array(
             z.object({
-              source: z.object({ type: z.string(), name: z.string() }),
+              source: namedEntityInputSchema,
               relation: z.string(),
-              target: z.object({ type: z.string(), name: z.string() }),
+              target: namedEntityInputSchema,
             }),
           )
           .optional()

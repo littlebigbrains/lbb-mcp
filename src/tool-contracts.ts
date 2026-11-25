@@ -481,7 +481,7 @@ export const entityEmbeddingSchema = z
   })
   .passthrough();
 
-const namedEntityInputSchema = z
+export const namedEntityInputSchema = z
   .object({
     type: z.string(),
     name: z.string(),
