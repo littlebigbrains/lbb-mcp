@@ -47,6 +47,8 @@ export async function connect(
   const server = buildLbbServer(lbb, {
     log: () => {},
     destructiveWithoutApproval: "refuse",
+    // The sandbox tools are off unless a test asks, whatever the environment says.
+    sandboxes: false,
     ...options,
   });
   const [clientTransport, serverTransport] =
