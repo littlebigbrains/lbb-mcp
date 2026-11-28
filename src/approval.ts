@@ -10,7 +10,9 @@ import type {
   McpApprovalDecision,
   McpToolCallEvent,
 } from "./query-observer.js";
+import { z } from "zod";
 import { updateOperations } from "./sparql-update.js";
+import { TOOL_TITLES } from "./tool-contracts.js";
 import { ToolError, errorResult } from "./tool-runtime.js";
 
 /** The `extra` argument of a tool callback. */
@@ -108,6 +110,53 @@ export interface ToolHost {
   ): Promise<ErrorResult | undefined>;
 }
 
+/** The argument a host reads to pick one of a person's environments. */
+export const ENVIRONMENT_ARGUMENT = "environment";
+
+/** The config with an optional `environment` argument, when the host asks. */
+function withEnvironment(config: unknown, description?: string): unknown {
+  if (!description || typeof config !== "object" || config === null)
+    return config;
+  const field = z
+    .string()
+    .regex(/^[a-z0-9](?:[a-z0-9-]{0,51}[a-z0-9])?$/)
+    .optional()
+    .describe(description);
+  const schema = (config as { inputSchema?: unknown }).inputSchema;
+  if (schema instanceof z.ZodObject)
+    return {
+      ...config,
+      inputSchema: schema.extend({ [ENVIRONMENT_ARGUMENT]: field }),
+    };
+  if (typeof schema === "object" && schema !== null)
+    return {
+      ...config,
+      inputSchema: { ...schema, [ENVIRONMENT_ARGUMENT]: field },
+    };
+  return config;
+}
+
+/** The arguments without `environment`: no tool reads it. */
+function withoutEnvironment(args: unknown): unknown {
+  if (
+    typeof args !== "object" ||
+    args === null ||
+    !(ENVIRONMENT_ARGUMENT in args)
+  )
+    return args;
+  const rest: Record<string, unknown> = { ...args };
+  delete rest[ENVIRONMENT_ARGUMENT];
+  return rest;
+}
+
+/** The config with the tool's title from TOOL_TITLES, unless it names one. */
+function withTitle(name: string, config: unknown): unknown {
+  const title = TOOL_TITLES[name];
+  if (!title || typeof config !== "object" || config === null) return config;
+  if ("title" in config && config.title) return config;
+  return { ...config, title };
+}
+
 /** A word of the log: an action or an error code, never free text. */
 function token(value: unknown, pattern: RegExp): string | undefined {
   return typeof value === "string" && pattern.test(value) ? value : undefined;
@@ -140,45 +189,54 @@ export function toolHost(
     config: unknown,
     callback: (...params: unknown[]) => unknown,
   ) =>
-    registerTool(name, config, async (...params: unknown[]) => {
-      const extra = params[params.length - 1] as ToolExtra;
-      const record: { approval?: McpApprovalDecision } = {};
-      calls.set(extra, record);
-      const args = (params.length > 1 ? params[0] : undefined) as
-        { action?: unknown; mode?: unknown } | undefined;
-      const action = token(args?.action ?? args?.mode, /^[a-z_]{1,40}$/);
-      const emit = (outcome: "ok" | "error", code?: string) => {
-        try {
-          log({
-            event: "mcp_tool_call",
-            tool: name,
-            ...(action ? { action } : {}),
-            outcome,
-            ...(code ? { code } : {}),
-            ...(record.approval ? { approval: record.approval } : {}),
-            request_id: extra.requestId,
-          });
-        } catch {
-          // A log that fails never fails the call.
-        }
-      };
-      try {
-        const result = (await callback(...params)) as {
-          isError?: boolean;
-          structuredContent?: { error?: { code?: unknown } };
+    registerTool(
+      name,
+      withEnvironment(withTitle(name, config), options.environmentArgument),
+      async (...params: unknown[]) => {
+        if (options.environmentArgument && params.length > 1)
+          params[0] = withoutEnvironment(params[0]);
+        const extra = params[params.length - 1] as ToolExtra;
+        const record: { approval?: McpApprovalDecision } = {};
+        calls.set(extra, record);
+        const args = (params.length > 1 ? params[0] : undefined) as
+          { action?: unknown; mode?: unknown } | undefined;
+        const action = token(args?.action ?? args?.mode, /^[a-z_]{1,40}$/);
+        const emit = (outcome: "ok" | "error", code?: string) => {
+          try {
+            log({
+              event: "mcp_tool_call",
+              tool: name,
+              ...(action ? { action } : {}),
+              outcome,
+              ...(code ? { code } : {}),
+              ...(record.approval ? { approval: record.approval } : {}),
+              request_id: extra.requestId,
+            });
+          } catch {
+            // A log that fails never fails the call.
+          }
         };
-        emit(
-          result?.isError ? "error" : "ok",
-          result?.isError
-            ? token(result.structuredContent?.error?.code, /^[a-z0-9_.]{1,64}$/)
-            : undefined,
-        );
-        return result;
-      } catch (error) {
-        emit("error", "exception");
-        throw error;
-      }
-    })) as McpServer["registerTool"];
+        try {
+          const result = (await callback(...params)) as {
+            isError?: boolean;
+            structuredContent?: { error?: { code?: unknown } };
+          };
+          emit(
+            result?.isError ? "error" : "ok",
+            result?.isError
+              ? token(
+                  result.structuredContent?.error?.code,
+                  /^[a-z0-9_.]{1,64}$/,
+                )
+              : undefined,
+          );
+          return result;
+        } catch (error) {
+          emit("error", "exception");
+          throw error;
+        }
+      },
+    )) as McpServer["registerTool"];
 
   const approve = async (
     extra: ToolExtra,

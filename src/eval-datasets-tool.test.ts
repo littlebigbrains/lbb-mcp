@@ -68,7 +68,7 @@ test("lbb_evals reads, exports and creates datasets and adds items", async () =>
     );
 
     const created = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: {
         action: "datasets_create",
         name: "sinks",
@@ -99,7 +99,7 @@ test("lbb_evals reads, exports and creates datasets and adds items", async () =>
     assert.match(call.key ?? "", /^eval-datasets\.create:/);
 
     await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: {
         action: "datasets_create",
         name: "sinks from a test",
@@ -114,7 +114,7 @@ test("lbb_evals reads, exports and creates datasets and adds items", async () =>
     });
 
     await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "datasets_items", id: "ds_1", items: [item] },
     });
     call = last();
@@ -155,7 +155,7 @@ test("lbb_evals reads, exports and creates datasets and adds items", async () =>
 
     // The labels of a trace still take items.
     await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: {
         action: "label",
         trace_id: "tr_1",

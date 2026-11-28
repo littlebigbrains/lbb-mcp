@@ -33,10 +33,49 @@ export const QUESTION_MAX_ANCHOR_CHARS = 2_000;
 /** Dated points one question's timeline may carry, and the characters of a label. */
 export const QUESTION_MAX_TIMELINE = 200;
 export const QUESTION_MAX_TIMELINE_LABEL_CHARS = 200;
+/**
+ * The human title of each tool. MCP clients show it in place of the name, and
+ * the Claude directory requires one on every tool. The tool host sets it at
+ * registration, so a new tool without an entry fails the contract test.
+ */
+export const TOOL_TITLES: Readonly<Record<string, string>> = {
+  lbb_inspect: "Inspect graph",
+  lbb_query: "Query graph",
+  lbb_commit: "Write graph facts",
+  lbb_configure: "Configure schema",
+  lbb_rdf: "Import RDF",
+  lbb_files: "Read files",
+  lbb_models: "Read model activity",
+  lbb_embeddings: "Read embeddings",
+  lbb_embeddings_manage: "Manage embeddings",
+  lbb_embeddings_delete: "Delete embedding",
+  lbb_fit_sources: "Read fit sources",
+  lbb_fit_sources_manage: "Manage fit sources",
+  lbb_fit_sources_delete: "Delete fit source",
+  lbb_workflows: "Read workflows",
+  lbb_workflows_manage: "Manage workflows",
+  lbb_workflows_delete: "Delete workflow",
+  lbb_model_choice: "Read model choices",
+  lbb_model_choice_manage: "Manage model choices",
+  lbb_evals: "Read evals",
+  lbb_evals_manage: "Manage evals",
+  lbb_evals_delete: "Delete eval dataset",
+  lbb_reviews: "Read reviews",
+  lbb_reviews_manage: "Manage reviews",
+  lbb_sandboxes: "Read sandboxes",
+  lbb_sandboxes_manage: "Manage sandboxes",
+  lbb_sandboxes_delete: "Delete sandbox",
+};
+
 export const READ_ONLY = { readOnlyHint: true } as const;
+/**
+ * A tool that changes state. The Claude directory reads a tool as read only
+ * (readOnlyHint) or as one that changes data (destructiveHint), and asks the
+ * person before each call of the second kind. Every write tool says so.
+ */
 export const MUTATING = {
   readOnlyHint: false,
-  destructiveHint: false,
+  destructiveHint: true,
   openWorldHint: false,
 } as const;
 export const DESTRUCTIVE = {
@@ -72,6 +111,14 @@ export const graphScope = {
     .optional()
     .describe("Graph to target; defaults to the connection's graph"),
 };
+
+export const namespaceSchema = z
+  .string()
+  .max(1_100)
+  .optional()
+  .describe(
+    "Catalog namespace: a path such as acme/projects, root, or an ns_ id. Defaults to root, the whole environment.",
+  );
 
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const jsonObjectArraySchema = z.array(jsonObjectSchema);
@@ -481,7 +528,7 @@ export const entityEmbeddingSchema = z
   })
   .passthrough();
 
-const namedEntityInputSchema = z
+export const namedEntityInputSchema = z
   .object({
     type: z.string(),
     name: z.string(),
@@ -766,6 +813,13 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("graphs"), ...readScope }).strict(),
+  z
+    .object({
+      action: z.literal("namespaces"),
+      namespace: namespaceSchema,
+      detail: detailSchema,
+    })
+    .strict(),
   z.object({ action: z.literal("publication"), ...readScope }).strict(),
   z
     .object({
@@ -1124,6 +1178,33 @@ export const queryInputSchema = z.discriminatedUnion("mode", [
       field: z.string().optional(),
       sparql: jsonObjectSchema.optional(),
       ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("namespace"),
+      namespace: namespaceSchema,
+      include_descendants: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also query the graphs of child namespaces. Defaults to true; false queries only the graphs the namespace owns directly.",
+        ),
+      default_graph: z
+        .enum(["union", "empty"])
+        .optional()
+        .describe(
+          "union (default): patterns outside GRAPH match the RDF set union of every source graph. empty: only GRAPH patterns match.",
+        ),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          "SPARQL 1.1 SELECT or ASK over asserted RDF. GRAPH ?g binds each source graph as urn:lbb:graph:<graph_id>, so SELECT ?g … WHERE { GRAPH ?g { … } } tells which project a row came from. Search, entailment, FROM, SERVICE and updates are refused.",
+        ),
+      row_limit: rowLimitSchema,
+      cursor: cursorSchema,
+      detail: detailSchema,
     })
     .strict(),
   z
