@@ -262,7 +262,7 @@ test("the retract question says when the records lose their field values", async
   await client.close();
 });
 
-test("lbb_commit refuses a link with confidence and no evidence on a graph that stores RDF", async () => {
+test("lbb_commit sends a link with confidence and no evidence to a graph that stores RDF", async () => {
   const { fetch, calls } = nativeServer();
   const client = await connect(fetch);
   const result = await client.callTool({
@@ -272,12 +272,11 @@ test("lbb_commit refuses a link with confidence and no evidence on a graph that 
       triplets: [{ ...triplets[0]!, confidence: 0.4 }],
     },
   });
-  assert.equal(result.isError, true);
-  const error = errorOf(result);
-  assert.equal(error.code, "rdf_native_graph");
-  assert.match(error.message, /evidence/);
-  assert.match(error.message, /Nothing was written/);
-  // Only the refused plain request went out.
-  assert.equal(calls.length, 1);
+  assert.notEqual(result.isError, true, text(result));
+  // The refused plain request, then the owned form with the confidence.
+  assert.equal(calls.length, 2);
+  const sent = JSON.parse(calls[1]!.init.body ?? "{}");
+  assert.notEqual(sent.replace_owned, undefined);
+  assert.equal(sent.triplets[0].confidence, 0.4);
   await client.close();
 });
