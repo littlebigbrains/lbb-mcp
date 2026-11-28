@@ -73,6 +73,14 @@ export const graphScope = {
     .describe("Graph to target; defaults to the connection's graph"),
 };
 
+export const namespaceSchema = z
+  .string()
+  .max(1_100)
+  .optional()
+  .describe(
+    "Catalog namespace: a path such as acme/projects, root, or an ns_ id. Defaults to root, the whole environment.",
+  );
+
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
 export const jsonObjectArraySchema = z.array(jsonObjectSchema);
 /** A month, `yyyy-mm` (UTC), as the model activity and model checks read it. */
@@ -481,7 +489,7 @@ export const entityEmbeddingSchema = z
   })
   .passthrough();
 
-const namedEntityInputSchema = z
+export const namedEntityInputSchema = z
   .object({
     type: z.string(),
     name: z.string(),
@@ -766,6 +774,13 @@ export const inspectInputSchema = z.discriminatedUnion("action", [
     })
     .strict(),
   z.object({ action: z.literal("graphs"), ...readScope }).strict(),
+  z
+    .object({
+      action: z.literal("namespaces"),
+      namespace: namespaceSchema,
+      detail: detailSchema,
+    })
+    .strict(),
   z.object({ action: z.literal("publication"), ...readScope }).strict(),
   z
     .object({
@@ -1124,6 +1139,33 @@ export const queryInputSchema = z.discriminatedUnion("mode", [
       field: z.string().optional(),
       sparql: jsonObjectSchema.optional(),
       ...readScope,
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("namespace"),
+      namespace: namespaceSchema,
+      include_descendants: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also query the graphs of child namespaces. Defaults to true; false queries only the graphs the namespace owns directly.",
+        ),
+      default_graph: z
+        .enum(["union", "empty"])
+        .optional()
+        .describe(
+          "union (default): patterns outside GRAPH match the RDF set union of every source graph. empty: only GRAPH patterns match.",
+        ),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          "SPARQL 1.1 SELECT or ASK over asserted RDF. GRAPH ?g binds each source graph as urn:lbb:graph:<graph_id>, so SELECT ?g … WHERE { GRAPH ?g { … } } tells which project a row came from. Search, entailment, FROM, SERVICE and updates are refused.",
+        ),
+      row_limit: rowLimitSchema,
+      cursor: cursorSchema,
+      detail: detailSchema,
     })
     .strict(),
   z
