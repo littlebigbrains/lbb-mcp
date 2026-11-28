@@ -25,6 +25,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     "lbb_embeddings_manage",
     "lbb_evals",
     "lbb_evals_delete",
+    "lbb_evals_manage",
     "lbb_files",
     "lbb_fit_sources",
     "lbb_fit_sources_delete",
@@ -43,15 +44,24 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   ]);
 
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  // Claude directory rules: each tool has a title, a name of at most 64
+  // characters, and is read only or marked as one that changes data.
+  for (const tool of tools) {
+    assert.ok(tool.title && tool.title.length <= 40, tool.name);
+    assert.ok(tool.name.length <= 64, tool.name);
+    assert.ok(
+      tool.annotations?.readOnlyHint === true ||
+        tool.annotations?.destructiveHint === true,
+      tool.name,
+    );
+  }
+  assert.equal(byName.lbb_query.title, "Query graph");
   assert.equal(byName.lbb_models.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_inspect.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_query.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_embeddings.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_embeddings_manage.annotations?.readOnlyHint, false);
-  assert.equal(
-    byName.lbb_embeddings_manage.annotations?.destructiveHint,
-    false,
-  );
+  assert.equal(byName.lbb_embeddings_manage.annotations?.destructiveHint, true);
   assert.equal(byName.lbb_embeddings_delete.annotations?.destructiveHint, true);
   assert.equal(byName.lbb_fit_sources.annotations?.readOnlyHint, true);
   assert.equal(byName.lbb_fit_sources_manage.annotations?.readOnlyHint, false);
@@ -100,7 +110,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     ["parsed", "waiting", "unsupported", "failed"],
   );
   assert.equal(byName.lbb_workflows_manage.annotations?.readOnlyHint, false);
-  assert.equal(byName.lbb_workflows_manage.annotations?.destructiveHint, false);
+  assert.equal(byName.lbb_workflows_manage.annotations?.destructiveHint, true);
   assert.equal(byName.lbb_workflows_delete.annotations?.destructiveHint, true);
   // Developer workflows: the workflow settings, and pause and resume.
   const workflowManage = byName.lbb_workflows_manage.inputSchema as {
@@ -124,7 +134,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     assert.equal(workflowManage.properties[field]?.type, "string", field);
   assert.match(
     byName.lbb_workflows_manage.description ?? "",
-    /deletes no data, so it is not a destructive write/,
+    /deletes no data, so it asks nobody first/,
   );
   for (const field of ["workflow", "owns"])
     assert.equal(workflowManage.properties[field]?.type, "object", field);
@@ -137,7 +147,7 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   assert.equal(byName.lbb_model_choice_manage.annotations?.readOnlyHint, false);
   assert.equal(
     byName.lbb_model_choice_manage.annotations?.destructiveHint,
-    false,
+    true,
   );
   assert.match(
     byName.lbb_model_choice_manage.description ?? "",
@@ -213,12 +223,20 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
     }
   ).properties.action.enum;
   assert.ok(modelActions?.includes("activity"));
-  // lbb_evals reads the model checks and lets an agent correct one.
-  const evalActions = (
-    byName.lbb_evals.inputSchema as {
-      properties: Record<string, { enum?: string[] }>;
-    }
-  ).properties.action.enum;
+  // lbb_evals reads; lbb_evals_manage writes. No action is in both.
+  const evalReads = actionsOf("lbb_evals") ?? [];
+  const evalWrites = actionsOf("lbb_evals_manage") ?? [];
+  assert.deepEqual(
+    evalReads.filter((action) => evalWrites.includes(action)),
+    [],
+  );
+  assert.equal(byName.lbb_evals.annotations?.readOnlyHint, true);
+  assert.equal(byName.lbb_evals_manage.annotations?.destructiveHint, true);
+  for (const action of ["summary", "checks", "datasets_get", "experiment"])
+    assert.ok(evalReads.includes(action), action);
+  for (const action of ["label", "review_check", "datasets_create", "delete"])
+    assert.ok(evalWrites.includes(action), action);
+  const evalActions = [...evalReads, ...evalWrites];
   for (const action of [
     "checks_summary",
     "checks",
@@ -240,12 +258,12 @@ test("exposes the Little Big Brain tool belt with annotations", async () => {
   // An experiment spends model budget: the agent shows the estimate first.
   assert.match(byName.lbb_evals.description ?? "", /experiments_estimate/);
   assert.match(
-    byName.lbb_evals.description ?? "",
+    byName.lbb_evals_manage.description ?? "",
     /review only what the user confirmed/,
   );
   // A dataset is deleted with lbb_evals_delete, which asks the person.
   assert.ok(!evalActions?.includes("datasets_delete"));
-  assert.match(byName.lbb_evals.description ?? "", /lbb_evals_delete/);
+  assert.match(byName.lbb_evals_manage.description ?? "", /lbb_evals_delete/);
   assert.equal(byName.lbb_evals_delete.annotations?.destructiveHint, true);
   assert.deepEqual(
     (byName.lbb_evals_delete.inputSchema as { required?: string[] }).required,
@@ -290,7 +308,7 @@ test("pins the public MCP server identity and complete tool contract", async () 
 
   assert.equal(
     digest,
-    "93d1b4d7eed5a0cd56b097f9cb9f5077745ee72f9cf2d25e6fc67576368e19ca",
+    "304c745619eab5cb8f35d1d7587b09841996d30d37d6cf55ec4f79dfdca56aa5",
   );
   await client.close();
 });
@@ -446,4 +464,142 @@ test("lbb_query documents the real structured FILTER shape with a runnable examp
     "drops the wrong { filter: { property }, op, value } shape that the server rejects",
   );
   await client.close();
+});
+
+/** The digest of the contract of `tools`, as the pin above computes it. */
+function contractDigest(
+  tools: {
+    name: string;
+    title?: string;
+    description?: string;
+    inputSchema?: unknown;
+    outputSchema?: unknown;
+    annotations?: unknown;
+  }[],
+): string {
+  const contract = tools
+    .map(
+      ({
+        name,
+        title,
+        description,
+        inputSchema,
+        outputSchema,
+        annotations,
+      }) => ({
+        name,
+        title,
+        description,
+        inputSchema,
+        outputSchema,
+        annotations,
+      }),
+    )
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalize(contract)))
+    .digest("hex");
+}
+
+test("the sandbox tools are registered only when asked, and pinned when they are", async () => {
+  const sandboxTools = [
+    "lbb_sandboxes",
+    "lbb_sandboxes_delete",
+    "lbb_sandboxes_manage",
+  ];
+  const off = await connect(async () => ok());
+  const on = await connect(async () => ok(), { sandboxes: true });
+  try {
+    const offTools = (await off.listTools()).tools;
+    const onTools = (await on.listTools()).tools;
+    const isSandbox = (tool: { name: string }) =>
+      sandboxTools.includes(tool.name);
+    // Off: none of the three. The default state is the one the pin of
+    // "the public MCP server identity and complete tool contract" covers.
+    assert.deepEqual(offTools.filter(isSandbox), []);
+    // On: the same tools as before, and the three.
+    assert.deepEqual(
+      onTools
+        .filter(isSandbox)
+        .map((tool) => tool.name)
+        .sort(),
+      sandboxTools,
+    );
+    assert.equal(
+      contractDigest(onTools.filter((tool) => !isSandbox(tool))),
+      contractDigest(offTools),
+    );
+    assert.equal(
+      contractDigest(onTools.filter(isSandbox)),
+      "1f62c36af00bb4c7857fe8216b19c80ed6a7f812cfebff66813516cd3f9dd4e3",
+    );
+  } finally {
+    await off.close();
+    await on.close();
+  }
+});
+
+test("a host that serves many environments adds an optional environment argument, and no tool sees it", async () => {
+  const calls: { url: string; body?: string }[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({
+      url: String(input),
+      body: typeof init?.body === "string" ? init.body : undefined,
+    });
+    return ok({ graphs: [], items: [], next_cursor: null });
+  };
+  const plain = await connect(fetch, { sandboxes: true });
+  try {
+    const { tools } = await plain.listTools();
+    for (const tool of tools)
+      assert.equal(
+        (tool.inputSchema as { properties?: Record<string, unknown> })
+          .properties?.environment,
+        undefined,
+        tool.name,
+      );
+  } finally {
+    await plain.close();
+  }
+
+  const client = await connect(fetch, {
+    sandboxes: true,
+    environmentArgument: "The environment to use.",
+  });
+  try {
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      const schema = tool.inputSchema as {
+        properties?: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      assert.equal(schema.properties?.environment?.type, "string", tool.name);
+      assert.ok(!schema.required?.includes("environment"), tool.name);
+    }
+    // A union tool and a strict tool both take it, and neither sends it on.
+    for (const call of [
+      { name: "lbb_inspect", arguments: { action: "graphs" } },
+      { name: "lbb_sandboxes", arguments: { action: "list" } },
+    ]) {
+      calls.length = 0;
+      const result = await client.callTool({
+        ...call,
+        arguments: { ...call.arguments, environment: "staging" },
+      });
+      assert.notEqual(result.isError, true, JSON.stringify(result.content));
+      assert.ok(calls.length > 0, call.name);
+      for (const sent of calls) {
+        assert.doesNotMatch(sent.url, /environment|staging/, call.name);
+        assert.doesNotMatch(sent.body ?? "", /staging/, call.name);
+      }
+    }
+    // The argument is an environment ID, nothing else.
+    const bad = await client.callTool({
+      name: "lbb_inspect",
+      arguments: { action: "graphs", environment: "Not An Id" },
+    });
+    assert.equal(bad.isError, true);
+  } finally {
+    await client.close();
+  }
 });

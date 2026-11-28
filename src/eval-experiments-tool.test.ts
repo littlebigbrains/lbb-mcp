@@ -68,7 +68,7 @@ test("lbb_evals lists, reads, estimates, starts and cancels experiments", async 
       ["POST", "/v1/evals/experiments/estimate", { ...request, max_items: 6 }],
     );
     const created = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: {
         action: "experiments_create",
         ...request,
@@ -83,7 +83,7 @@ test("lbb_evals lists, reads, estimates, starts and cancels experiments", async 
     assert.match(call.key ?? "", /^eval-experiments\.create:/);
 
     await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "experiments_cancel", id: "exp_1" },
     });
     assert.deepEqual(
@@ -94,7 +94,7 @@ test("lbb_evals lists, reads, estimates, starts and cancels experiments", async 
 
     // A revision as B.
     await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: {
         action: "experiments_create",
         workflow: "sinks",

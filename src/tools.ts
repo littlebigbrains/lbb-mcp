@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LbbClient, LbbError, type Schemas } from "@littlebigbrain/client";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { metadataPage } from "./metadata-pages.js";
 import {
@@ -17,10 +18,13 @@ import {
   type DescribeArgs,
   type NamesArgs,
 } from "./query-tools.js";
+import { inspectNamespaces, namespaceQuery } from "./namespace-tools.js";
 import { registerRdfTool } from "./rdf-tool.js";
 import { commitRecordsTool } from "./records-write.js";
 import { registerFilesTool } from "./files-tool.js";
+import { cocoSummary, fetchCommands, itemImage } from "./eval-boxes-tool.js";
 import { registerReviewsTools } from "./reviews-tool.js";
+import { registerSandboxesTools, sandboxesEnabled } from "./sandboxes-tool.js";
 import {
   APPROVAL_TEXT,
   graphLabel,
@@ -48,6 +52,7 @@ import {
   inspectInputSchema,
   inspectWireSchema,
   jsonObjectSchema,
+  namedEntityInputSchema,
   queryInputSchema,
   queryWireSchema,
   reviewAnswerSchema,
@@ -131,6 +136,46 @@ function vectorsRefused(
   );
 }
 
+const EVALS_READ_ACTIONS = [
+  "summary",
+  "traces",
+  "trace",
+  "goldens",
+  "results",
+  "settings",
+  "checks_summary",
+  "checks",
+  "diagnosis",
+  "answer_tests",
+  "answer_test",
+  "answer_tests_estimate",
+  "datasets",
+  "datasets_get",
+  "datasets_export",
+  "datasets_coco",
+  "datasets_image",
+  "experiments",
+  "experiment",
+  "experiments_estimate",
+] as const;
+const EVALS_WRITE_ACTIONS = [
+  "label",
+  "judge",
+  "golden",
+  "accept",
+  "delete",
+  "run",
+  "run_answers",
+  "review_check",
+  "diagnose",
+  "answer_tests_create",
+  "answer_tests_cancel",
+  "datasets_create",
+  "datasets_items",
+  "experiments_create",
+  "experiments_cancel",
+] as const;
+
 export function registerLbbTools(
   server: McpServer,
   client: LbbClient,
@@ -140,11 +185,12 @@ export function registerLbbTools(
   registerRdfTool(host, client);
   registerFilesTool(host, client);
   registerReviewsTools(host, client);
+  if (sandboxesEnabled(options.sandboxes)) registerSandboxesTools(host, client);
   host.register(
     "lbb_inspect",
     {
       description:
-        "Read graph context and exact graph facts. Actions: guide, graphs, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, ontology_suggestions. graphs works before bootstrap; ontology_suggestions lists the ontology change suggestions that wait for review (or were decided); fact_count is how many graph facts (triplets and entity property rows) accepting one commits, and identity_count how many identities it links. publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity with iri, or version=records/1 and entity_id or entity_type+key, returns a complete exact-term record, separate assertions and snapshot from RDF. as_of_commit_seq pins retained history; schema-bound historical selection is currently unsupported. Oversized records fail rather than truncate. Omitting the new selectors preserves the native attributes/relationships view. Use lbb_query with SPARQL property paths for precise path selection.",
+        "Read graph context and exact graph facts. Actions: guide, graphs, namespaces, publication, ontology, ontology_conformance, schema, ontology_search, metadata, entity, ontology_suggestions. graphs works before bootstrap; namespaces reads the catalog: one namespace (namespace=acme/projects, default root), its child namespaces and the graphs it owns, so you can find which graphs belong to a customer or project group; ontology_suggestions lists the ontology change suggestions that wait for review (or were decided); fact_count is how many graph facts (triplets and entity property rows) accepting one commits, and identity_count how many identities it links. publication reports whether writes are queryable. ontology and schema return complete entries with page_size, section and cursor; follow next until absent. schema reads active native ontology/SHACL metadata without running validation. Query asserted RDF/OWL axioms separately with lbb_query. ontology_conformance serves the durable report referenced by the pinned published root. entity with iri, or version=records/1 and entity_id or entity_type+key, returns a complete exact-term record, separate assertions and snapshot from RDF. as_of_commit_seq pins retained history; schema-bound historical selection is currently unsupported. Oversized records fail rather than truncate. Omitting the new selectors preserves the native attributes/relationships view. Use lbb_query with SPARQL property paths for precise path selection.",
       inputSchema: inspectWireSchema,
       annotations: READ_ONLY,
     },
@@ -195,6 +241,11 @@ export function registerLbbTools(
         } catch (error) {
           return errorResult(await enrichError(client, error));
         }
+      }
+      if (args.action === "namespaces") {
+        return inspectNamespaces(client, args).catch(async (error) =>
+          errorResult(await enrichError(client, error)),
+        );
       }
       if (args.action === "ontology" || args.action === "schema") {
         return metadataPage(client, args)
@@ -253,7 +304,7 @@ export function registerLbbTools(
     "lbb_query",
     {
       description:
-        "Analytical and expert reads. Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze, and four tools for writing your own queries: names, describe, commit_at, compare. names: before a query that names an entity (a person, a company), find its IRI with text=<the question or the names>; use the first candidate, not a CONTAINS match on the name. describe: before a query on classes or properties you have not seen, read them with question=<the question> (or classes/properties as IRIs): how many sampled instances hold each property (a filter on a rare one returns few rows), the values of small classes such as stages, examples and schema statements. commit_at: for a question about a date, find the commit of date=YYYY-MM-DD (or moment=RFC 3339), then run mode=sparql as_of_commit_seq=<it>. compare: for what changed between two points, run one SELECT at before and after (default the latest) with key=[the entity variable]; added, removed and changed come with totals and pages (next). Use mode=question when you have a question in plain words and no SPARQL query: the server picks the kind of question (route), runs queries in a bounded loop, reads their rows, and answers in plain words (about 8 s). The result holds the answer with citations and a chart hint (kind, x, y: columns of the rows), the steps, the route, and the query and rows the answer stands on. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Use the exact IRIs returned by names, describe or RDF. Native records use content-addressed entity IRIs, <https://littlebigbrain.com/r/NAME> relations and <https://littlebigbrain.com/class/NAME> types (lowercased); imported RDF may use any vocabulary. Never build an entity IRI from a display name. Structured and text queries pin one published watermark for the request.",
+        "Analytical and expert reads of the Little Big Brain query API (SPARQL 1.1 and its JSON form; https://docs.littlebigbrain.com/guides/sparql-and-shacl/). Modes: question (a question in plain words), structured (SPARQL-subset JSON body), sparql (SPARQL text), namespace (one SPARQL SELECT or ASK across every graph of a catalog namespace, for example all projects of a customer; find namespaces with lbb_inspect action=namespaces), search (instances by meaning over every searchable class; filter narrows by class and relationship; every hit checked against the graph), analyze, and four tools for writing your own queries: names, describe, commit_at, compare. names: before a query that names an entity (a person, a company), find its IRI with text=<the question or the names>; use the first candidate, not a CONTAINS match on the name. describe: before a query on classes or properties you have not seen, read them with question=<the question> (or classes/properties as IRIs): how many sampled instances hold each property (a filter on a rare one returns few rows), the values of small classes such as stages, examples and schema statements. commit_at: for a question about a date, find the commit of date=YYYY-MM-DD (or moment=RFC 3339), then run mode=sparql as_of_commit_seq=<it>. compare: for what changed between two points, run one SELECT at before and after (default the latest) with key=[the entity variable]; added, removed and changed come with totals and pages (next). Use mode=question when you have a question in plain words and no SPARQL query: the server picks the kind of question (route), runs queries in a bounded loop, reads their rows, and answers in plain words (about 8 s). The result holds the answer with citations and a chart hint (kind, x, y: columns of the rows), the steps, the route, and the query and rows the answer stands on. Continue or correct that query with mode=sparql. Each question uses model tokens and counts toward a daily limit of the stack. SPARQL is the query language; search finds what the words describe. SPARQL text can also search by meaning inside the query with ?x <https://littlebigbrain.com/search#similarTo> \"words\", so the other patterns filter and join the hits in one query; the result's search field reports the plan. To plan a search: lbb_embeddings action=list, then SPARQL for a class's relationships on a sample, then mode=search with explain=true to check the resolved filter before the real search (lbb_inspect action=guide has the queries). Use the exact IRIs returned by names, describe or RDF. Native records use content-addressed entity IRIs, <https://littlebigbrain.com/r/NAME> relations and <https://littlebigbrain.com/class/NAME> types (lowercased); imported RDF may use any vocabulary. Never build an entity IRI from a display name. Structured and text queries pin one published watermark for the request.",
       inputSchema: queryWireSchema,
       annotations: READ_ONLY,
     },
@@ -599,6 +650,16 @@ export function registerLbbTools(
               options.queryTextFormat,
               progress,
             );
+          } catch (error) {
+            return errorResult(await enrichError(client, error));
+          }
+        })();
+      }
+      if (args.mode === "namespace") {
+        const namespaceArgs = args;
+        return (async () => {
+          try {
+            return await namespaceQuery(client, namespaceArgs);
           } catch (error) {
             return errorResult(await enrichError(client, error));
           }
@@ -1499,7 +1560,7 @@ export function registerLbbTools(
     "lbb_workflows_manage",
     {
       description:
-        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. For starter=agent, use takes owns.properties (1 to 64), params.agent={instructions,tools?,max_iterations?,max_cost_micro_usd?,max_wall_ms?,max_read_ms?,max_proposals?,max_review_items?,pin_wait_ms?}, top-level gate and optional budget_usd_per_month; ownership, input and authority do not go inside params.agent. Tools are graph.read, files.read and propose_write; finish is implicit. Models chooses use extract, not an agent use. Hosted content-trigger creation uses PUT /v1/workflows/named with the dedicated Agent request; define here remains a developer-workflow action. A workflow that calls models (agent, ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, one trigger (class and fields for a watch, media_types for a content trigger on uploads, schedule for one run per slot of a timer, or stream for the events a client sends, in batches), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name, optional inputs) with inputs sends 1 to 16 explicit {iri} or {sha256} inputs as new manual-origin messages, pinned to the current revision; use the original source IRI from run_results to run a failed or pin-wait input again, not a proposed value subject. Each new message gets a new work key. Without inputs, run runs a workflow with triggers now: its watch sends every instance again, a content trigger reads its log again, a schedule sends one run outside its slots, a stream sends its partial batches. activate (name, revision) makes an earlier revision of a workflow's settings (from lbb_workflows action=revisions) the one in use: it goes through the same checks as a change, and answers the workflow with its active_revision. Show the user what changes first (compare the settings of the two revisions), and when the revision's last_tested is null say that no test is recorded for those settings and ask before you activate (activation stays allowed), and pass expected_revision, the revision you read as bound, so a change by someone else since fails with workflow_revision_conflict. A revision whose settings the graph now reads differently fails with workflow_revision_stale; then change the workflow instead. Activating changes what the workflow does from then on and deletes no data, so it is not a destructive write; a change of the watch, the parameters or the gate makes the workflow read its class again, and work that waits or runs keeps the revision it started with. tests_create tests a values.extract workflow or an Agent workflow on a server that offers hosted agent tests on chosen inputs before it writes: name (a workflow of the graph; starter defaults to values.extract) or install (a workflow not created yet, as use takes it: starter, name, watch, params, gate), and iris (at most 20) or sample (1 to 20, default 6), and models to try other models before choosing one. A test reads each input as the workflow would and calls its models (the calls count in the monthly workflow budget); it writes nothing to the graph. Poll lbb_workflows action=tests_get. tests_answer records the person's answer to one value of a read input (id, iri, property, answer: accept, reject, correct with value, or cant_tell; null removes it); it writes nothing to the graph. Answer only what the user decided. tests_cancel stops a queued or running test (id). Save a test's answers as a dataset with lbb_evals action=datasets_create.",
+        "Create a workflow from a starter workflow, or refresh, pause or resume a triggered workflow. Run lbb_workflows action=preview first and show the user the watch and the instance count. use creates a workflow from a starter workflow of action=starters, under a name (default: the class's local name), with its watch (class, fields) and params; the workflow then reads every instance of the class and follows each published commit. A developer workflow (starter=workflow) also takes workflow (workflow_type and version of the developer's worker), owns and batch; it needs a server with the workflow engine. use again with the same starter and name changes only what you name, and the same request again changes nothing. For starter=agent, use takes owns.properties (1 to 64), params.agent={instructions,tools?,max_iterations?,max_cost_micro_usd?,max_wall_ms?,max_read_ms?,max_proposals?,max_review_items?,pin_wait_ms?}, top-level gate and optional budget_usd_per_month; ownership, input and authority do not go inside params.agent. Tools are graph.read, files.read and propose_write; finish is implicit. Models chooses use extract, not an agent use. Hosted content-trigger creation uses PUT /v1/workflows/named with the dedicated Agent request; define here remains a developer-workflow action. A workflow that calls models (agent, ontology.fit, documents.link, documents.map, values.extract) spends model budget as it reads. refresh asks the workflow to run now and returns at once with queued; poll lbb_workflows action=get for progress. pause stops a workflow (a developer workflow, documents.parse, documents.link, documents.map or values.extract) from reading and sending, and stops the claims of a developer workflow's shards; resume lets it catch up. Without starter, pause and resume name a workflow with triggers. search.embed and ontology.fit cannot be paused. define creates or changes a workflow with triggers of the developer's worker (/v1/workflows/named): name, workflow, one trigger (class and fields for a watch, media_types for a content trigger on uploads, schedule for one run per slot of a timer, or stream for the events a client sends, in batches), owns, batch, and shards (engine identities, 1 to 16), route_by (a field that keeps work in order) and window (messages queued per shard, default 4), and optionally budget_usd_per_month (the workflow's own monthly model budget), on_exhausted (block or skip) and fan_in (the id of a fan-in identity the shards send to); it needs a server with the workflow engine, and a change of shards waits for empty inboxes. run (name, optional inputs) with inputs sends 1 to 16 explicit {iri} or {sha256} inputs as new manual-origin messages, pinned to the current revision; use the original source IRI from run_results to run a failed or pin-wait input again, not a proposed value subject. Each new message gets a new work key. Without inputs, run runs a workflow with triggers now: its watch sends every instance again, a content trigger reads its log again, a schedule sends one run outside its slots, a stream sends its partial batches. activate (name, revision) makes an earlier revision of a workflow's settings (from lbb_workflows action=revisions) the one in use: it goes through the same checks as a change, and answers the workflow with its active_revision. Show the user what changes first (compare the settings of the two revisions), and when the revision's last_tested is null say that no test is recorded for those settings and ask before you activate (activation stays allowed), and pass expected_revision, the revision you read as bound, so a change by someone else since fails with workflow_revision_conflict. A revision whose settings the graph now reads differently fails with workflow_revision_stale; then change the workflow instead. Activating changes what the workflow does from then on and deletes no data, so it asks nobody first; a change of the watch, the parameters or the gate makes the workflow read its class again, and work that waits or runs keeps the revision it started with. tests_create tests a values.extract workflow or an Agent workflow on a server that offers hosted agent tests on chosen inputs before it writes: name (a workflow of the graph; starter defaults to values.extract) or install (a workflow not created yet, as use takes it: starter, name, watch, params, gate), and iris (at most 20) or sample (1 to 20, default 6), and models to try other models before choosing one. A test reads each input as the workflow would and calls its models (the calls count in the monthly workflow budget); it writes nothing to the graph. Poll lbb_workflows action=tests_get. tests_answer records the person's answer to one value of a read input (id, iri, property, answer: accept, reject, correct with value, or cant_tell; null removes it); it writes nothing to the graph. Answer only what the user decided. tests_cancel stops a queued or running test (id). Save a test's answers as a dataset with lbb_evals action=datasets_create.",
       inputSchema: {
         action: z.enum([
           "use",
@@ -1814,11 +1875,12 @@ export function registerLbbTools(
     "lbb_model_choice_manage",
     {
       description:
-        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most the trial budget ($3.00 by default) of model and judge cost; an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model. put_choice chooses the model of a workflow use (use extract or decide, provider, model, effort) for the environment, or for one workflow with workflow: the next calls run it. Pick the model from the row's options in lbb_model_choice action=choices, show the user the price per million tokens of the model in use and of the new one, and set only what the user confirmed. delete_choice removes a choice: the use runs the environment's choice, else its default; it answers {id, object, deleted: true}. Both change only the model of future calls and remove no data, so neither asks for approval.",
+        "Model choice, writes. start tests a candidate model on the uses in jobs (without jobs, every use it can do that has checked calls): the server answers those checked calls again with the candidate and scores it and the model in use against the same ground truth. It changes no model and spends at most max_cost_usd of model and judge cost (default the server's, $10.00); an open trial of the same use and candidate comes back as it is. Pick candidates from lbb_model_choice action=options (provider anthropic with an effort, or typesafe jev-latest). A trial runs by itself: poll lbb_model_choice action=trial until its status is no longer running. stop ends a trial; it keeps what it compared. limit sets a trial's max_cost_usd (above what it spent); a trial that ended at its limit before its target goes on. switch makes the trial's use run its candidate on this graph from the next call on; only a trial that qualifies and compared with the model in use switches (ask to a Claude model, route to a Jev model). Show the user the trial's report (score, difference and interval, cost per call, time) and switch only what the user confirmed. revert puts the use back on LBB's model. put_choice chooses the model of a workflow use (use extract or decide, provider, model, effort) for the environment, or for one workflow with workflow: the next calls run it. Pick the model from the row's options in lbb_model_choice action=choices, show the user the price per million tokens of the model in use and of the new one, and set only what the user confirmed. delete_choice removes a choice: the use runs the environment's choice, else its default; it answers {id, object, deleted: true}. Both change only the model of future calls and remove no data, so neither asks for approval.",
       inputSchema: {
         action: z.enum([
           "start",
           "stop",
+          "limit",
           "switch",
           "revert",
           "put_choice",
@@ -1858,10 +1920,18 @@ export function registerLbbTools(
           .max(30)
           .optional()
           .describe("start: the days the trial takes new checks (default 14)."),
+        max_cost_usd: z
+          .number()
+          .positive()
+          .max(100)
+          .optional()
+          .describe(
+            "start / limit: the cost limit of a trial in US dollars (at most 100).",
+          ),
         trial_id: z
           .string()
           .optional()
-          .describe("stop / switch: the trial id."),
+          .describe("stop / limit / switch: the trial id."),
         job: modelUse
           .optional()
           .describe("revert: the use to put back on LBB's model."),
@@ -1902,10 +1972,16 @@ export function registerLbbTools(
               ...(args.jobs ? { jobs: args.jobs } : {}),
               ...(args.target ? { target: args.target } : {}),
               ...(args.days ? { days: args.days } : {}),
+              ...(args.max_cost_usd ? { max_cost_usd: args.max_cost_usd } : {}),
             });
           case "stop":
             if (!args.trial_id) throw new Error("stop requires trial_id");
             return models.trials.stop(args.trial_id);
+          case "limit":
+            if (!args.trial_id || !args.max_cost_usd) {
+              throw new Error("limit requires trial_id and max_cost_usd");
+            }
+            return models.trials.limit(args.trial_id, args.max_cost_usd);
           case "switch":
             if (!args.trial_id) throw new Error("switch requires trial_id");
             return models.switches.create({ trial: args.trial_id });
@@ -1962,563 +2038,673 @@ export function registerLbbTools(
     };
   };
 
-  host.register(
-    "lbb_evals",
-    {
-      description:
-        "Managed evals: ground truth for the questions an app asks and the searches it runs. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. summary, traces, goldens, results, and settings read state. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph. Experiments: two configurations of a workflow, A and B, on the items of a dataset, with the difference of B against A and its 95% interval. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. Each arm runs as a workflow test that writes nothing to the graph and spends model budget; each item is graded against the dataset's labels. experiments_estimate shows the cost first (items, the cost of both arms, the limit, the budget left): call it, show the user the figures, and start only what the user confirmed. experiments_create starts one (workflow, dataset, b, optionally max_items up to 200 and max_cost_usd up to 100, default 5); poll experiment (id) until its status is done, failed or cancelled, and read report.delta with ci_low and ci_high (outcome too_few under 10 items, else better, worse or same) and the item rows. experiments lists them (workflow, dataset, status, one page with next_cursor); experiments_cancel stops one, keeping what it compared. None of them changes the workflow or the graph. To use B, make the change with the experiment's id: lbb_model_choice_manage action=put_choice (or lbb_workflows_manage action=activate) with experiment, after the user confirmed; it fails with experiment_outdated when the workflow moved since.",
-      inputSchema: {
-        action: z.enum([
-          "summary",
-          "traces",
-          "trace",
-          "label",
-          "judge",
-          "goldens",
-          "golden",
-          "accept",
-          "delete",
-          "run",
-          "run_answers",
-          "results",
-          "settings",
-          "checks_summary",
-          "checks",
-          "review_check",
-          "datasets",
-          "datasets_get",
-          "datasets_export",
-          "datasets_create",
-          "datasets_items",
-          "experiments",
-          "experiment",
-          "experiments_estimate",
-          "experiments_create",
-          "experiments_cancel",
-        ]),
-        trace_id: z
-          .string()
-          .optional()
-          .describe("trace / label / judge: the trace id from lbb_query."),
-        item: z
-          .string()
-          .optional()
-          .describe(
-            "label: the result id (a hit's `id`, or an item id from trace) to label with `valid`.",
-          ),
-        valid: z
-          .boolean()
-          .optional()
-          .describe(
-            "label: true = the result answers the request (thumbs up), false = it does not. Without item or items, on a question's trace: the whole answer is right (true) or wrong (false).",
-          ),
-        items: z
-          .array(z.union([evalLabelItemSchema, evalDatasetItemSchema]))
-          .optional()
-          .describe(
-            "label: several results at once, each {id, valid, note}. datasets_create, datasets_items: the examples, at most 500, each {name, text, values, leave_out, iri, case}; values and leave_out hold {property, value, accept, stated, quote, reason, source}; source says which person's answer gave a label (kind test or review, id, at): send it back as read, or leave it out.",
-          ),
-        by: z
-          .string()
-          .optional()
-          .describe("label: who labels (an agent name)."),
-        note: z
-          .string()
-          .optional()
-          .describe(
-            "label / review_check: why. review_check: at most 2,000 characters.",
-          ),
-        sparql: z
-          .string()
-          .optional()
-          .describe(
-            "golden: the query to freeze (the search text for surface=search). label: with valid=false and no item, the right query for the question; the server checks and runs it once.",
-          ),
-        route: z
-          .enum([
-            "lookup",
-            "aggregate",
-            "search",
-            "history",
-            "schema",
-            "unanswerable",
-          ])
-          .optional()
-          .describe(
-            "label: with valid=true, or valid=false with sparql, the route the question expects.",
-          ),
-        answers: z
-          .array(
-            z
-              .object({
-                golden: z.string().min(1),
-                sparql: z.string().optional(),
-                entailment: z
-                  .enum(["none", "subclass", "rdfs", "owl"])
-                  .optional(),
-                as_of_commit_seq: z.number().int().nonnegative().optional(),
-                route: z
-                  .object({
-                    kind: z.enum([
-                      "lookup",
-                      "aggregate",
-                      "search",
-                      "history",
-                      "schema",
-                      "unanswerable",
-                    ]),
-                    confidence: z.number(),
-                    by: z.enum(["caller", "router", "rewriter"]),
-                    probabilities: z.record(z.string(), z.number()).optional(),
-                  })
-                  .strict()
-                  .optional(),
-                reply: z
-                  .object({
-                    text: z.string(),
-                    citations: z.array(z.string()).optional(),
-                  })
-                  .optional(),
-                error: z.string().optional(),
-                cost_micro_usd: z.number().int().nonnegative().optional(),
-              })
-              .strict(),
-          )
-          .optional()
-          .describe(
-            "run_answers: one answer per question golden your app asked: golden (its id), sparql (the query whose rows hold the answer; leave it out when the question is unanswerable), entailment, as_of_commit_seq, route (as the router returned it), reply, error (your app failed), cost_micro_usd.",
-          ),
-        runner: z
-          .string()
-          .optional()
-          .describe(
-            "run_answers / results: your app's name, lower-case letters, digits and -, at most 40 characters (default app). results without runner reads the server's runs.",
-          ),
-        surface: z
-          .enum(["sparql", "search"])
-          .optional()
-          .describe(
-            "golden: which surface the query runs on (default sparql).",
-          ),
-        embedding: z
-          .string()
-          .optional()
-          .describe("golden: the embedding, for surface=search."),
-        top_k: z
-          .number()
-          .int()
-          .positive()
-          .max(200)
-          .optional()
-          .describe("golden: the top_k of a search golden."),
-        request: z
-          .string()
-          .optional()
-          .describe("golden: the user's words the query answers."),
-        golden_id: z
-          .string()
-          .optional()
-          .describe("accept / delete: the golden id."),
-        limit: z.number().int().positive().optional(),
-        unlabeled: z
-          .boolean()
-          .optional()
-          .describe("traces: only traces without a label."),
-        consistency: z
-          .enum(["strong", "eventual"])
-          .optional()
-          .describe(
-            "run / run_answers / accept: strong reads the head, eventual the last published commit.",
-          ),
-        month: yearMonthSchema
-          .optional()
-          .describe(
-            "checks_summary / checks: the month, yyyy-mm (UTC). Defaults to the current month.",
-          ),
-        job: z
-          .enum([
-            "rerank",
-            "route",
-            "ask",
-            "rewrite",
-            "fit",
-            "propose",
-            "label",
-          ])
-          .optional()
-          .describe("checks: only the checks of one job."),
-        verdict: z
-          .enum(["right", "partly", "wrong"])
-          .optional()
-          .describe(
-            "checks: only the checks whose ground truth has this verdict. review_check with agree=false: the right verdict.",
-          ),
-        reviewed: z
-          .boolean()
-          .optional()
-          .describe(
-            "checks: true = only the checks a person reviewed, false = only the others.",
-          ),
-        after: z
-          .string()
-          .optional()
-          .describe("checks: the next_after of the previous page."),
-        call_id: z
-          .string()
-          .optional()
-          .describe("review_check: the check's `call` id, from checks."),
-        agree: z
-          .boolean()
-          .optional()
-          .describe(
-            "review_check: true = the judge is right, false = correct it with verdict.",
-          ),
-        score: z
-          .number()
-          .min(0)
-          .max(1)
-          .optional()
-          .describe(
-            "review_check with agree=false: the right score, 0 to 1. Omit for the judge's score of that verdict.",
-          ),
-        reference: jsonObjectSchema
-          .optional()
-          .describe(
-            'review_check with agree=false: the right answer. A rerank or label check: {"grades": {"<hit id>": 0..3}}; a route or fit check: {"picks": {"<question id>": "<option>"}}.',
-          ),
-        id: z
-          .string()
-          .optional()
-          .describe(
-            "datasets_get, datasets_export, datasets_items: the dataset's id (ds_…). experiment, experiments_cancel: the experiment's id (exp_…).",
-          ),
-        cursor: z
-          .string()
-          .optional()
-          .describe(
-            "datasets, experiments: the next_cursor of the page before.",
-          ),
-        workflow: z
-          .string()
-          .optional()
-          .describe(
-            "experiments_estimate, experiments_create: the workflow to compare. experiments: only the experiments of this workflow.",
-          ),
-        dataset: z
-          .string()
-          .optional()
-          .describe(
-            "experiments_estimate, experiments_create: the dataset (ds_…) whose items both arms run. experiments: only the experiments on this dataset.",
-          ),
-        b: experimentArmSchema
-          .optional()
-          .describe(
-            "experiments_estimate, experiments_create: what B changes in A: {model: {use, model: {provider, model, effort}}} or {revision}, not both.",
-          ),
-        max_items: z
-          .number()
-          .int()
-          .min(1)
-          .max(200)
-          .optional()
-          .describe(
-            "experiments_estimate, experiments_create: run the dataset's first items only (default 200).",
-          ),
-        max_cost_usd: z
-          .number()
-          .positive()
-          .max(100)
-          .optional()
-          .describe(
-            "experiments_estimate, experiments_create: the cost limit of both arms in US dollars (default 5).",
-          ),
-        status: z
-          .enum(["queued", "running", "done", "failed", "cancelled"])
-          .optional()
-          .describe("experiments: only the experiments with this status."),
-        name: z
-          .string()
-          .optional()
-          .describe("datasets_create: the dataset's name."),
-        kind: z
-          .enum(["values"])
-          .optional()
-          .describe(
-            "datasets_create: what the items hold: values (the default).",
-          ),
-        install: z
-          .object({
-            properties: z
-              .record(z.string(), z.string())
-              .optional()
-              .describe(
-                "Each property's value type: text, keyword, i64, f64 or bool",
-              ),
-            units: z
-              .record(z.string(), z.string())
-              .optional()
-              .describe("The unit of each number property"),
-            context: z.string().optional(),
-          })
-          .strict()
-          .optional()
-          .describe("datasets_create: the settings it is graded with."),
-        about: z
-          .array(z.string())
-          .optional()
-          .describe("datasets_create: what the dataset is, in sentences."),
-        source: z
-          .object({ kind: z.literal("test"), id: z.string() })
-          .strict()
-          .optional()
-          .describe(
-            'datasets_create: {"kind": "test", "id": <test id>}: the answers of a workflow test become the items, and its settings the install.',
-          ),
-        detail: detailSchema,
-        ...graphScope,
-      },
-      annotations: MUTATING,
-    },
-    ({
-      action,
-      trace_id,
-      item,
-      valid,
-      items,
-      by,
-      note,
-      sparql,
-      route,
-      answers,
-      runner,
-      surface,
-      embedding,
-      top_k,
-      request,
-      golden_id,
-      limit,
-      unlabeled,
-      consistency,
-      month,
-      job,
-      verdict,
-      reviewed,
-      after,
-      call_id,
-      agree,
-      score,
-      reference,
-      id,
-      cursor,
-      workflow,
-      dataset,
-      b,
-      max_items,
-      max_cost_usd,
-      status,
+  type EvalsAction = (
+    typeof EVALS_READ_ACTIONS | typeof EVALS_WRITE_ACTIONS
+  )[number];
+  const registerEvals = (
+    name: string,
+    description: string,
+    actions: readonly [EvalsAction, ...EvalsAction[]],
+    annotations: ToolAnnotations,
+  ): void => {
+    host.register(
       name,
-      kind,
-      install,
-      about,
-      source,
-      detail,
-      graph,
-    }) => {
-      if (action === "experiments") {
-        const experiments = scoped(client, graph).evals.experiments;
-        return runPage(
-          client,
-          "lbb_evals.experiments",
-          detail,
-          pageLimit(detail, limit, EVAL_EXPERIMENTS_PAGE_MAX),
-          (pageSize) =>
-            experiments.list({
-              workflow,
-              dataset,
-              status,
-              limit: pageSize,
-              cursor,
-            }),
-        );
-      }
-      if (action === "datasets") {
-        const datasets = scoped(client, graph).evals.datasets;
-        return runPage(
-          client,
-          "lbb_evals.datasets",
-          detail,
-          pageLimit(detail, limit, EVAL_DATASETS_PAGE_MAX),
-          (pageSize) => datasets.list({ limit: pageSize, cursor }),
-        );
-      }
-      return run(client, `lbb_evals.${action}`, detail, () => {
-        const target = scoped(client, graph);
-        switch (action) {
-          case "summary":
-            return target.evals.summary();
-          case "traces":
-            return target.evals.traces({ limit, unlabeled });
-          case "trace":
-            if (!trace_id) throw new Error("trace requires trace_id");
-            return target.evals.trace(trace_id);
-          case "label": {
-            if (!trace_id) throw new Error("label requires trace_id");
-            const labels = items && z.array(evalLabelItemSchema).parse(items);
-            if (item && valid === undefined)
-              throw new Error("label requires valid with item");
-            if (!item && !labels?.length && valid === undefined)
-              throw new Error(
-                "label requires item (with valid), items, or valid alone for the answer of a question",
-              );
-            if (
-              sparql !== undefined &&
-              (item || labels?.length || valid !== false)
+      {
+        description,
+        inputSchema: {
+          action: z.enum(actions),
+          trace_id: z
+            .string()
+            .optional()
+            .describe("trace / label / judge: the trace id from lbb_query."),
+          item: z
+            .string()
+            .optional()
+            .describe(
+              "label: the result id (a hit's `id`, or an item id from trace) to label with `valid`. datasets_image: the image's file_name (the item's name).",
+            ),
+          valid: z
+            .boolean()
+            .optional()
+            .describe(
+              "label: true = the result answers the request (thumbs up), false = it does not. Without item or items, on a question's trace: the whole answer is right (true) or wrong (false).",
+            ),
+          items: z
+            .array(z.union([evalLabelItemSchema, evalDatasetItemSchema]))
+            .optional()
+            .describe(
+              "label: several results at once, each {id, valid, note}. datasets_create, datasets_items: the examples, at most 500, each {name, text, values, leave_out, iri, case}; values and leave_out hold {property, value, accept, stated, quote, reason, source}; source says which person's answer gave a label (kind test or review, id, at): send it back as read, or leave it out.",
+            ),
+          by: z
+            .string()
+            .optional()
+            .describe("label: who labels (an agent name)."),
+          note: z
+            .string()
+            .optional()
+            .describe(
+              "label / review_check: why. review_check: at most 2,000 characters.",
+            ),
+          sparql: z
+            .string()
+            .optional()
+            .describe(
+              "golden: the query to freeze (the search text for surface=search). label: with valid=false and no item, the right query for the question; the server checks and runs it once.",
+            ),
+          route: z
+            .enum([
+              "lookup",
+              "aggregate",
+              "search",
+              "history",
+              "schema",
+              "unanswerable",
+            ])
+            .optional()
+            .describe(
+              "label: with valid=true, or valid=false with sparql, the route the question expects.",
+            ),
+          answers: z
+            .array(
+              z
+                .object({
+                  golden: z.string().min(1),
+                  sparql: z.string().optional(),
+                  entailment: z
+                    .enum(["none", "subclass", "rdfs", "owl"])
+                    .optional(),
+                  as_of_commit_seq: z.number().int().nonnegative().optional(),
+                  route: z
+                    .object({
+                      kind: z.enum([
+                        "lookup",
+                        "aggregate",
+                        "search",
+                        "history",
+                        "schema",
+                        "unanswerable",
+                      ]),
+                      confidence: z.number(),
+                      by: z.enum(["caller", "router", "rewriter"]),
+                      probabilities: z
+                        .record(z.string(), z.number())
+                        .optional(),
+                    })
+                    .strict()
+                    .optional(),
+                  reply: z
+                    .object({
+                      text: z.string(),
+                      citations: z.array(z.string()).optional(),
+                    })
+                    .optional(),
+                  error: z.string().optional(),
+                  cost_micro_usd: z.number().int().nonnegative().optional(),
+                })
+                .strict(),
             )
-              throw new Error(
-                "label takes sparql (the right query) only with valid=false and no item",
-              );
-            if (
-              route !== undefined &&
-              (item ||
-                labels?.length ||
-                (valid !== true && sparql === undefined))
-            )
-              throw new Error(
-                "label takes route only with valid=true, or valid=false with sparql, and no item",
-              );
-            return target.evals.label(trace_id, {
-              ...(item ? { item, valid } : {}),
-              ...(labels?.length ? { items: labels } : {}),
-              // The answer of a question as a whole.
-              ...(!item && !labels?.length ? { valid } : {}),
-              ...(sparql !== undefined ? { sparql } : {}),
-              ...(route !== undefined ? { route } : {}),
-              by,
-              note,
-            });
-          }
-          case "judge":
-            return target.evals.judge({ traceId: trace_id, limit });
-          case "goldens":
-            return target.evals.goldens();
-          case "golden":
-            if (!sparql) throw new Error("golden requires sparql");
-            if (surface === "search" && !embedding)
-              throw new Error("a search golden requires embedding");
-            return target.evals.createGolden({
-              sparql,
-              request,
-              ...(surface ? { surface } : {}),
-              ...(embedding ? { embedding } : {}),
-              ...(top_k ? { top_k } : {}),
-            });
-          case "accept":
-            if (!golden_id) throw new Error("accept requires golden_id");
-            return target.evals.acceptGolden(golden_id, { consistency });
-          case "delete":
-            if (!golden_id) throw new Error("delete requires golden_id");
-            return target.evals.deleteGolden(golden_id);
-          case "run":
-            return target.evals.run({ consistency });
-          case "run_answers":
-            if (!answers?.length)
-              throw new Error("run_answers requires answers");
-            return target.evals.runAnswers(
-              { answers, ...(runner ? { runner } : {}) },
-              { consistency },
-            );
-          case "results":
-            return target.evals.results({ limit, runner });
-          case "settings":
-            return target.evals.settings();
-          case "checks_summary":
-            return target.checks.summary({ month });
-          case "checks":
-            return target.checks.list({
-              job,
-              month,
-              verdict,
-              reviewed,
-              after,
-              limit,
-            });
-          case "review_check":
-            if (!call_id) throw new Error("review_check requires call_id");
-            if (agree === undefined)
-              throw new Error("review_check requires agree");
-            if (
-              agree &&
-              (verdict !== undefined ||
-                score !== undefined ||
-                reference !== undefined)
-            )
-              throw new Error(
-                "review_check with agree=true takes no verdict, score or reference",
-              );
-            if (!agree && !verdict)
-              throw new Error("review_check with agree=false requires verdict");
-            return target.checks.review(call_id, {
-              agree,
-              ...(verdict ? { verdict } : {}),
-              ...(score !== undefined ? { score } : {}),
-              ...(reference ? { reference } : {}),
-              ...(note ? { note } : {}),
-            });
-          case "datasets_get":
-            return target.evals.datasets.get(datasetId(id));
-          case "datasets_export":
-            return target.evals.datasets.export(datasetId(id));
-          case "datasets_create": {
-            if (!name) throw new Error("datasets_create requires name");
-            const examples =
-              items && z.array(evalDatasetItemSchema).parse(items);
-            if (!source && !examples?.length)
-              throw new Error(
-                "datasets_create requires items, or a source (a workflow test)",
-              );
-            return target.evals.datasets.create({
-              name,
-              kind: kind ?? "values",
-              ...(examples ? { items: examples } : {}),
-              ...(install ? { install } : {}),
-              ...(about ? { about } : {}),
-              ...(source ? { source } : {}),
-            });
-          }
-          case "datasets_items": {
-            const examples =
-              items && z.array(evalDatasetItemSchema).parse(items);
-            if (!examples?.length)
-              throw new Error("datasets_items requires items");
-            return target.evals.datasets.addItems(datasetId(id), examples);
-          }
-          case "experiment":
-            return target.evals.experiments.get(experimentId(id));
-          case "experiments_cancel":
-            return target.evals.experiments.cancel(experimentId(id));
-          case "experiments_estimate":
-            return target.evals.experiments.estimate(
-              experimentRequest({
+            .optional()
+            .describe(
+              "run_answers: one answer per question golden your app asked: golden (its id), sparql (the query whose rows hold the answer; leave it out when the question is unanswerable), entailment, as_of_commit_seq, route (as the router returned it), reply, error (your app failed), cost_micro_usd.",
+            ),
+          runner: z
+            .string()
+            .optional()
+            .describe(
+              "run_answers / results: your app's name, lower-case letters, digits and -, at most 40 characters (default app). results without runner reads the server's runs.",
+            ),
+          surface: z
+            .enum(["sparql", "search"])
+            .optional()
+            .describe(
+              "golden: which surface the query runs on (default sparql).",
+            ),
+          embedding: z
+            .string()
+            .optional()
+            .describe("golden: the embedding, for surface=search."),
+          top_k: z
+            .number()
+            .int()
+            .positive()
+            .max(200)
+            .optional()
+            .describe("golden: the top_k of a search golden."),
+          request: z
+            .string()
+            .optional()
+            .describe("golden: the user's words the query answers."),
+          golden_id: z
+            .string()
+            .optional()
+            .describe("accept / delete: the golden id."),
+          limit: z.number().int().positive().optional(),
+          unlabeled: z
+            .boolean()
+            .optional()
+            .describe("traces: only traces without a label."),
+          consistency: z
+            .enum(["strong", "eventual"])
+            .optional()
+            .describe(
+              "run / run_answers / accept: strong reads the head, eventual the last published commit.",
+            ),
+          month: yearMonthSchema
+            .optional()
+            .describe(
+              "checks_summary / checks: the month, yyyy-mm (UTC). Defaults to the current month.",
+            ),
+          job: z
+            .enum([
+              "rerank",
+              "route",
+              "ask",
+              "rewrite",
+              "fit",
+              "propose",
+              "label",
+            ])
+            .optional()
+            .describe("checks: only the checks of one job."),
+          verdict: z
+            .enum(["right", "partly", "wrong"])
+            .optional()
+            .describe(
+              "checks: only the checks whose ground truth has this verdict. review_check with agree=false: the right verdict.",
+            ),
+          reviewed: z
+            .boolean()
+            .optional()
+            .describe(
+              "checks: true = only the checks a person reviewed, false = only the others.",
+            ),
+          after: z
+            .string()
+            .optional()
+            .describe("checks: the next_after of the previous page."),
+          call_id: z
+            .string()
+            .optional()
+            .describe(
+              "review_check, diagnose, diagnosis: the check's `call` id, from checks.",
+            ),
+          agree: z
+            .boolean()
+            .optional()
+            .describe(
+              "review_check: true = the judge is right, false = correct it with verdict.",
+            ),
+          score: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              "review_check with agree=false: the right score, 0 to 1. Omit for the judge's score of that verdict.",
+            ),
+          reference: jsonObjectSchema
+            .optional()
+            .describe(
+              'review_check with agree=false: the right answer. A rerank or label check: {"grades": {"<hit id>": 0..3}}; a route or fit check: {"picks": {"<question id>": "<option>"}}.',
+            ),
+          id: z
+            .string()
+            .optional()
+            .describe(
+              "datasets_get, datasets_export, datasets_coco, datasets_image, datasets_items: the dataset's id (ds_…). experiment, experiments_cancel: the experiment's id (exp_…). answer_test, answer_tests_cancel: the test's id (atest_…).",
+            ),
+          step: z
+            .number()
+            .int()
+            .min(0)
+            .optional()
+            .describe(
+              "answer_tests_estimate, answer_tests_create: the index of the next step of the call's diagnosis to test.",
+            ),
+          change: jsonObjectSchema
+            .optional()
+            .describe(
+              'answer_tests_estimate, answer_tests_create, in place of step: {"kind": "ask_rerank"}, {"kind": "instructions", "instructions": {"id": "ins_…", "version": "…"}} or {"kind": "alias", "alias": {"iri": "…", "label": "…"}}.',
+            ),
+          guard: z
+            .number()
+            .int()
+            .min(0)
+            .max(40)
+            .optional()
+            .describe(
+              "answer_tests_estimate, answer_tests_create: guard questions answered right (default 10; 0 runs without a guard set).",
+            ),
+          rewordings: z
+            .boolean()
+            .optional()
+            .describe(
+              "answer_tests_estimate, answer_tests_create: the judge's 3 rewordings of the question (default true).",
+            ),
+          replays: z
+            .number()
+            .int()
+            .min(1)
+            .max(5)
+            .optional()
+            .describe(
+              "answer_tests_estimate, answer_tests_create: answers per failed question and arm (default 2).",
+            ),
+          cursor: z
+            .string()
+            .optional()
+            .describe(
+              "datasets, experiments: the next_cursor of the page before.",
+            ),
+          workflow: z
+            .string()
+            .optional()
+            .describe(
+              "experiments_estimate, experiments_create: the workflow to compare. experiments: only the experiments of this workflow.",
+            ),
+          dataset: z
+            .string()
+            .optional()
+            .describe(
+              "experiments_estimate, experiments_create: the dataset (ds_…) whose items both arms run. experiments: only the experiments on this dataset.",
+            ),
+          b: experimentArmSchema
+            .optional()
+            .describe(
+              "experiments_estimate, experiments_create: what B changes in A: {model: {use, model: {provider, model, effort}}} or {revision}, not both.",
+            ),
+          max_items: z
+            .number()
+            .int()
+            .min(1)
+            .max(200)
+            .optional()
+            .describe(
+              "experiments_estimate, experiments_create: run the dataset's first items only (default 200).",
+            ),
+          max_cost_usd: z
+            .number()
+            .positive()
+            .max(100)
+            .optional()
+            .describe(
+              "experiments_estimate, experiments_create: the cost limit of both arms in US dollars (default 5). answer_tests_estimate, answer_tests_create: the cost limit of the test (default 15).",
+            ),
+          status: z
+            .enum(["queued", "running", "done", "failed", "cancelled"])
+            .optional()
+            .describe("experiments: only the experiments with this status."),
+          name: z
+            .string()
+            .optional()
+            .describe("datasets_create: the dataset's name."),
+          kind: z
+            .enum(["values"])
+            .optional()
+            .describe(
+              "datasets_create: what the items hold: values (the default).",
+            ),
+          install: z
+            .object({
+              properties: z
+                .record(z.string(), z.string())
+                .optional()
+                .describe(
+                  "Each property's value type: text, keyword, i64, f64 or bool",
+                ),
+              units: z
+                .record(z.string(), z.string())
+                .optional()
+                .describe("The unit of each number property"),
+              context: z.string().optional(),
+            })
+            .strict()
+            .optional()
+            .describe("datasets_create: the settings it is graded with."),
+          about: z
+            .array(z.string())
+            .optional()
+            .describe("datasets_create: what the dataset is, in sentences."),
+          source: z
+            .object({ kind: z.literal("test"), id: z.string() })
+            .strict()
+            .optional()
+            .describe(
+              'datasets_create: {"kind": "test", "id": <test id>}: the answers of a workflow test become the items, and its settings the install.',
+            ),
+          detail: detailSchema,
+          ...graphScope,
+        },
+        annotations,
+      },
+      ({
+        action,
+        trace_id,
+        item,
+        valid,
+        items,
+        by,
+        note,
+        sparql,
+        route,
+        answers,
+        runner,
+        surface,
+        embedding,
+        top_k,
+        request,
+        golden_id,
+        limit,
+        unlabeled,
+        consistency,
+        month,
+        job,
+        verdict,
+        reviewed,
+        after,
+        call_id,
+        agree,
+        score,
+        reference,
+        id,
+        cursor,
+        workflow,
+        dataset,
+        b,
+        max_items,
+        max_cost_usd,
+        step,
+        change,
+        guard,
+        rewordings,
+        replays,
+        status,
+        name,
+        kind,
+        install,
+        about,
+        source,
+        detail,
+        graph,
+      }) => {
+        if (action === "experiments") {
+          const experiments = scoped(client, graph).evals.experiments;
+          return runPage(
+            client,
+            "lbb_evals.experiments",
+            detail,
+            pageLimit(detail, limit, EVAL_EXPERIMENTS_PAGE_MAX),
+            (pageSize) =>
+              experiments.list({
                 workflow,
                 dataset,
-                b,
-                max_items,
-                max_cost_usd,
+                status,
+                limit: pageSize,
+                cursor,
               }),
-            );
-          case "experiments_create":
-            return target.evals.experiments.create(
-              experimentRequest({
-                workflow,
-                dataset,
-                b,
-                max_items,
-                max_cost_usd,
-              }),
-            );
+          );
         }
-      });
-    },
+        if (action === "datasets") {
+          const datasets = scoped(client, graph).evals.datasets;
+          return runPage(
+            client,
+            "lbb_evals.datasets",
+            detail,
+            pageLimit(detail, limit, EVAL_DATASETS_PAGE_MAX),
+            (pageSize) => datasets.list({ limit: pageSize, cursor }),
+          );
+        }
+        if (action === "datasets_image") {
+          return (async () => {
+            try {
+              if (!item)
+                throw new Error(
+                  "datasets_image requires item: the image's file_name",
+                );
+              return await itemImage(
+                scoped(client, graph),
+                datasetId(id),
+                item,
+              );
+            } catch (error) {
+              return errorResult(await enrichError(client, error));
+            }
+          })();
+        }
+        return run(client, `lbb_evals.${action}`, detail, () => {
+          const target = scoped(client, graph);
+          switch (action) {
+            case "summary":
+              return target.evals.summary();
+            case "traces":
+              return target.evals.traces({ limit, unlabeled });
+            case "trace":
+              if (!trace_id) throw new Error("trace requires trace_id");
+              return target.evals.trace(trace_id);
+            case "label": {
+              if (!trace_id) throw new Error("label requires trace_id");
+              const labels = items && z.array(evalLabelItemSchema).parse(items);
+              if (item && valid === undefined)
+                throw new Error("label requires valid with item");
+              if (!item && !labels?.length && valid === undefined)
+                throw new Error(
+                  "label requires item (with valid), items, or valid alone for the answer of a question",
+                );
+              if (
+                sparql !== undefined &&
+                (item || labels?.length || valid !== false)
+              )
+                throw new Error(
+                  "label takes sparql (the right query) only with valid=false and no item",
+                );
+              if (
+                route !== undefined &&
+                (item ||
+                  labels?.length ||
+                  (valid !== true && sparql === undefined))
+              )
+                throw new Error(
+                  "label takes route only with valid=true, or valid=false with sparql, and no item",
+                );
+              return target.evals.label(trace_id, {
+                ...(item ? { item, valid } : {}),
+                ...(labels?.length ? { items: labels } : {}),
+                // The answer of a question as a whole.
+                ...(!item && !labels?.length ? { valid } : {}),
+                ...(sparql !== undefined ? { sparql } : {}),
+                ...(route !== undefined ? { route } : {}),
+                by,
+                note,
+              });
+            }
+            case "judge":
+              return target.evals.judge({ traceId: trace_id, limit });
+            case "goldens":
+              return target.evals.goldens();
+            case "golden":
+              if (!sparql) throw new Error("golden requires sparql");
+              if (surface === "search" && !embedding)
+                throw new Error("a search golden requires embedding");
+              return target.evals.createGolden({
+                sparql,
+                request,
+                ...(surface ? { surface } : {}),
+                ...(embedding ? { embedding } : {}),
+                ...(top_k ? { top_k } : {}),
+              });
+            case "accept":
+              if (!golden_id) throw new Error("accept requires golden_id");
+              return target.evals.acceptGolden(golden_id, { consistency });
+            case "delete":
+              if (!golden_id) throw new Error("delete requires golden_id");
+              return target.evals.deleteGolden(golden_id);
+            case "run":
+              return target.evals.run({ consistency });
+            case "run_answers":
+              if (!answers?.length)
+                throw new Error("run_answers requires answers");
+              return target.evals.runAnswers(
+                { answers, ...(runner ? { runner } : {}) },
+                { consistency },
+              );
+            case "results":
+              return target.evals.results({ limit, runner });
+            case "settings":
+              return target.evals.settings();
+            case "checks_summary":
+              return target.checks.summary({ month });
+            case "checks":
+              return target.checks.list({
+                job,
+                month,
+                verdict,
+                reviewed,
+                after,
+                limit,
+              });
+            case "review_check":
+              if (!call_id) throw new Error("review_check requires call_id");
+              if (agree === undefined)
+                throw new Error("review_check requires agree");
+              if (
+                agree &&
+                (verdict !== undefined ||
+                  score !== undefined ||
+                  reference !== undefined)
+              )
+                throw new Error(
+                  "review_check with agree=true takes no verdict, score or reference",
+                );
+              if (!agree && !verdict)
+                throw new Error(
+                  "review_check with agree=false requires verdict",
+                );
+              return target.checks.review(call_id, {
+                agree,
+                ...(verdict ? { verdict } : {}),
+                ...(score !== undefined ? { score } : {}),
+                ...(reference ? { reference } : {}),
+                ...(note ? { note } : {}),
+              });
+            case "diagnose":
+              if (!call_id) throw new Error("diagnose requires call_id");
+              return target.checks.diagnose(call_id);
+            case "diagnosis":
+              if (!call_id) throw new Error("diagnosis requires call_id");
+              return target.checks.diagnosis(call_id);
+            case "datasets_get":
+              return target.evals.datasets.get(datasetId(id));
+            case "datasets_export":
+              return target.evals.datasets.export(datasetId(id));
+            case "datasets_coco": {
+              const dataset = datasetId(id);
+              return target.evals.datasets
+                .coco(dataset)
+                .then((coco) =>
+                  cocoSummary(
+                    coco,
+                    fetchCommands(
+                      dataset,
+                      graph ?? client.graphName,
+                      process.env.LBB_BASE_URL?.trim() || undefined,
+                    ),
+                  ),
+                );
+            }
+            case "datasets_create": {
+              if (!name) throw new Error("datasets_create requires name");
+              const examples =
+                items && z.array(evalDatasetItemSchema).parse(items);
+              if (!source && !examples?.length)
+                throw new Error(
+                  "datasets_create requires items, or a source (a workflow test)",
+                );
+              return target.evals.datasets.create({
+                name,
+                kind: kind ?? "values",
+                ...(examples ? { items: examples } : {}),
+                ...(install ? { install } : {}),
+                ...(about ? { about } : {}),
+                ...(source ? { source } : {}),
+              });
+            }
+            case "datasets_items": {
+              const examples =
+                items && z.array(evalDatasetItemSchema).parse(items);
+              if (!examples?.length)
+                throw new Error("datasets_items requires items");
+              return target.evals.datasets.addItems(datasetId(id), examples);
+            }
+            case "answer_tests":
+              return target.checks.answerTests.list(
+                call_id ? { call: call_id } : {},
+              );
+            case "answer_test":
+              if (!id) throw new Error("answer_test requires id");
+              return target.checks.answerTests.get(id);
+            case "answer_tests_cancel":
+              if (!id) throw new Error("answer_tests_cancel requires id");
+              return target.checks.answerTests.cancel(id);
+            case "answer_tests_estimate":
+            case "answer_tests_create": {
+              if (!call_id) throw new Error(`${action} requires call_id`);
+              const body = {
+                ...(step !== undefined ? { step } : {}),
+                ...(change
+                  ? {
+                      change:
+                        change as Schemas["AnswerTestCreateRequest"]["change"],
+                    }
+                  : {}),
+                ...(guard !== undefined ? { guard } : {}),
+                ...(rewordings !== undefined ? { rewordings } : {}),
+                ...(replays !== undefined ? { replays } : {}),
+                ...(max_cost_usd ? { max_cost_usd } : {}),
+              };
+              return action === "answer_tests_estimate"
+                ? target.checks.answerTests.estimate(call_id, body)
+                : target.checks.answerTests.create(call_id, body);
+            }
+            case "experiment":
+              return target.evals.experiments.get(experimentId(id));
+            case "experiments_cancel":
+              return target.evals.experiments.cancel(experimentId(id));
+            case "experiments_estimate":
+              return target.evals.experiments.estimate(
+                experimentRequest({
+                  workflow,
+                  dataset,
+                  b,
+                  max_items,
+                  max_cost_usd,
+                }),
+              );
+            case "experiments_create":
+              return target.evals.experiments.create(
+                experimentRequest({
+                  workflow,
+                  dataset,
+                  b,
+                  max_items,
+                  max_cost_usd,
+                }),
+              );
+          }
+        });
+      },
+    );
+  };
+  registerEvals(
+    "lbb_evals",
+    "Read managed evals: ground truth for the questions an app asks and the searches it runs. The writes (labels, goldens, runs, reviews, diagnoses, answer tests, datasets, experiments) are in lbb_evals_manage. A query run with `request` (lbb_query, also mode=question) records a trace: the question, the query that answered it, the type of that query (`query_type`: sparql, hybrid = search by meaning with conditions, search = search by meaning alone) and one item per result (hit or row); trace reads it back with the item ids. summary, traces, goldens, results, and settings read state; results with runner reads the runs that run_answers sent. A run that skipped goldens is partial (`partial: true`, `ran` of `total` ran, `skipped_by` says why: model_budget, run_time, daily_eval_budget, no_rewriter, not_asked): its `regression` speaks only for the goldens that ran, so `regression: false` on a partial run is not a pass. Say how many ran and why the others did not, never that the suite passed. Model checks: a judge model checks a sample of the model calls LBB makes for the graph (rerank, route, ask = the answer of a question, rewrite, fit, propose, label). checks_summary reads a month per job and model (checks, score, right, partly, wrong, reviews) and the judge's agreement with people; checks lists the month's checks, newest first, with the judge's verdict, score and reason and the ground truth (`truth`). diagnosis reads the stored result of a diagnose (call_id): outcome, summary, next_steps and evidence. Answer tests check a change before anyone applies it. answer_tests lists them (call_id: one call's); answer_test (id, atest_…) reads one; answer_tests_estimate shows the cost of one with the same arguments as answer_tests_create: show the user the figures before anyone starts it. Poll answer_test (id, atest_…) until status is done, failed or cancelled, then give the user verdict (worked, no_change, worse, too_few), the failed and guard reports and the warnings. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. The kind values holds per item an input text (name, text, iri), the property values a correct run writes (values) and those it must leave out (leave_out). datasets lists the graph's datasets, newest first, without their items (one page with next_cursor); datasets_get reads one (id) with its items; datasets_export returns it as a template's samples, records (records.json) and expected (expected.json). The kind boxes holds images with labelled boxes: per item a file (the SHA-256 of an image file of the graph), width, height, boxes and ignore regions ({label, box: [x0, y0, x1, y1]} in pixels), labels (the labels it is labelled for) and status (todo, done, skipped; score done items only). datasets_coco summarises a boxes dataset in the COCO object detection format (counts per label and status, a sample of images with their boxes, the COCO file when it fits) and gives the commands that write the whole dataset with its images to a folder for an experiment: run fetch.python (the Python SDK's download) or fetch.curl in the user's shell, not through this tool. datasets_image shows one image (id, item = its file_name) with its boxes. Experiments: two configurations of a workflow, A and B, on the items of a dataset, with the difference of B against A and its 95% interval. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. experiments_estimate shows the cost first (items, the cost of both arms, the limit, the budget left): show the user the figures before anyone starts one. experiment (id) reads one: read report.delta with ci_low and ci_high (outcome too_few under 10 items, else better, worse or same) and the item rows. experiments lists them (workflow, dataset, status, one page with next_cursor).",
+    EVALS_READ_ACTIONS,
+    READ_ONLY,
+  );
+  registerEvals(
+    "lbb_evals_manage",
+    "Write managed evals: ground truth for the questions an app asks and the searches it runs. The reads (summary, traces, goldens, results, checks, diagnoses, answer tests, datasets, experiments) are in lbb_evals. A query run with `request` (lbb_query, also mode=question) records a trace; label, judge and golden work on it. label has two forms. On a question's trace, valid alone judges the whole answer: valid=true makes the trace's query the golden query of the question; valid=false with sparql gives the right query, which becomes the golden query; valid=false alone marks the answer wrong; route with valid=true (or valid=false with sparql) names the route the question expects, and valid=true alone takes the trace's route. item + valid (or items) judges one result, a citation of the answer: the ground truth of the hits of a search by meaning, and a result marked wrong must not come back for any type. golden freezes a stored query or a search (every result it returns now is relevant). run checks every golden at the current commit: a question is asked again through the query rewriter, then the type of the query it wrote is compared with the expected type, its rows with the rows of the golden query at the same commit (`query_check`), and its results with the judged results, and the router's pick with the golden's route (route_check, which does not change the verdict); a search is done again; new results open a review trace. A run that skipped goldens is partial (`partial: true`, `ran` of `total` ran, `skipped_by` says why: model_budget, run_time, daily_eval_budget, no_rewriter, not_asked): its `regression` speaks only for the goldens that ran, so `regression: false` on a partial run is not a pass. Say how many ran and why the others did not, never that the suite passed. run_answers checks your own app's answers instead: ask each question golden's request with your own loop, then send answers=[{golden, sparql, route}] (route = the route of lbb_query mode=question with route mode, sparql absent for an unanswerable question, error for a failure); the server runs each query and checks it the same way, and the runs form the app's own series (runner; results with runner reads them). judge lets the platform's judge model (the hosted frontier model) label unlabeled results. accept (golden_id) accepts a golden; delete (golden_id) deletes one. Model checks: a judge model checks a sample of the model calls LBB makes for the graph. review_check records a person's review of one check (call_id): agree=true keeps the judge's verdict; agree=false with verdict (and an optional score, reference and note) corrects it. The review becomes the call's ground truth, so show the check to the user and review only what the user confirmed. diagnose finds why an answer of `ask` was weak (call_id) and what to do: at the commit the call read, the judge grades the entities the answer reached, the names the server linked and the hits of one search of the question over the graph. Read outcome first: missed (a relevant entity, best, the answer did not reach), broader_only (the closest match, used, is broader; next step accept_stand_in carries a drafted reference), answered_badly (the answer had relevant data and answered badly), not_in_graph. summary says it in a sentence and next_steps lists what to do (kind, text, iri): add_alias (alias holds the proposed label: the question's words for the entity), tune_search, add_instruction (note holds a drafted note for the Ask instructions, when no query searched by meaning), declare_embedding, accept_stand_in, add_data, keep_as_test, add_source. Show the user the summary and the next steps; act on one only when the user confirms. evidence holds every graded entity; notes holds linking_noise when a linked name is unrelated. It uses the judge and counts on the check budget. Answer tests check a change before anyone applies it: answer_tests_estimate (lbb_evals) shows the cost (call_id, and step = the index of a next step, or change = {kind: ask_rerank}, {kind: instructions, instructions: {id, version}} or {kind: alias, alias: {iri, label}}, or {kind: instructions, note} to test a note on a draft version, which the test makes and does not publish; guard questions answered right, 0 to 40, default 10; rewordings, default true; replays, default 2; max_cost_usd, default 15): show the user the figures, and start with answer_tests_create only what the user confirmed. A test runs as a workflow: arm A is Ask as it is, arm B is Ask with the change, both answer the question, its rewordings and the guard set, and the judge grades each answer. Poll answer_test (lbb_evals) (id, atest_…) until status is done, failed or cancelled, then give the user verdict (worked, no_change, worse, too_few), the failed and guard reports and the warnings. A step with no test yet fails with diagnosis_step_untestable. answer_tests_cancel stops one. A test changes nothing: the user applies the change with the write that sets it. Datasets: named sets of examples with the outputs a correct run gives, which workflow tests and template evals share. datasets_create makes one with name and items (at most 500), install (the settings it is graded with: each property's value type, units, context) and about, or from a workflow test's answers with source={kind: test, id}. datasets_items adds items to a dataset (id); an item with the name of one it holds replaces it. Delete a dataset with lbb_evals_delete, which asks the person first. A dataset ends with its graph. Experiments: two configurations of a workflow, A and B, on the items of a dataset. A is the workflow as it runs now; b changes one part: {model: {use: extract or decide, model: {provider, model, effort}}} (a model from lbb_model_choice action=choices options) or {revision: wrev_…} (a kept settings revision), not both. Each arm runs as a workflow test that writes nothing to the graph and spends model budget; each item is graded against the dataset's labels. experiments_estimate (lbb_evals) shows the cost first: show the user the figures, and start only what the user confirmed. experiments_create starts one (workflow, dataset, b, optionally max_items up to 200 and max_cost_usd up to 100, default 5); poll experiment (lbb_evals) until its status is done, failed or cancelled. experiments_cancel stops one, keeping what it compared. None of them changes the workflow or the graph. To use B, make the change with the experiment's id: lbb_model_choice_manage action=put_choice (or lbb_workflows_manage action=activate) with experiment, after the user confirmed; it fails with experiment_outdated when the workflow moved since.",
+    EVALS_WRITE_ACTIONS,
+    { ...MUTATING, destructiveHint: true },
   );
 
   host.register(
@@ -2573,9 +2759,9 @@ export function registerLbbTools(
         triplets: z
           .array(
             z.object({
-              source: z.object({ type: z.string(), name: z.string() }),
+              source: namedEntityInputSchema,
               relation: z.string(),
-              target: z.object({ type: z.string(), name: z.string() }),
+              target: namedEntityInputSchema,
               confidence: z.number().min(0).max(1).optional(),
               evidence: evidenceSchema.nullish(),
               valid_time: z
@@ -2627,9 +2813,9 @@ export function registerLbbTools(
         retract_edges: z
           .array(
             z.object({
-              source: z.object({ type: z.string(), name: z.string() }),
+              source: namedEntityInputSchema,
               relation: z.string(),
-              target: z.object({ type: z.string(), name: z.string() }),
+              target: namedEntityInputSchema,
             }),
           )
           .optional()

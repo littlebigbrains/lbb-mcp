@@ -748,7 +748,7 @@ test("lbb_evals label judges one result, or the answer of a question as a whole"
     { valid: false, note: "The user says the answer is wrong." },
   ]) {
     const result = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "label", trace_id: "t1", ...args },
     });
     assert.notEqual(result.isError, true, JSON.stringify(args));
@@ -774,7 +774,7 @@ test("lbb_evals label judges one result, or the answer of a question as a whole"
     { item: "e:1", valid: false, sparql: "ASK { ?s ?p ?o }" },
   ]) {
     const result = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "label", trace_id: "t1", ...args },
     });
     assert.equal(result.isError, true, JSON.stringify(args));
@@ -790,7 +790,7 @@ test("lbb_evals label names the route of a question with an answer label", async
     return ok({ trace: { trace_id: "t1" }, labeled: 0 });
   });
   const named = await client.callTool({
-    name: "lbb_evals",
+    name: "lbb_evals_manage",
     arguments: {
       action: "label",
       trace_id: "t1",
@@ -809,7 +809,7 @@ test("lbb_evals label names the route of a question with an answer label", async
     { item: "e:1", valid: true, route: "lookup" },
   ]) {
     const result = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "label", trace_id: "t1", ...args },
     });
     assert.equal(result.isError, true, JSON.stringify(args));
@@ -833,7 +833,7 @@ test("lbb_evals run_answers sends the app's answers and results reads its series
     { golden: "g2", error: "the model timed out" },
   ];
   const ran = await client.callTool({
-    name: "lbb_evals",
+    name: "lbb_evals_manage",
     arguments: {
       action: "run_answers",
       runner: "my-agent",
@@ -859,11 +859,108 @@ test("lbb_evals run_answers sends the app's answers and results reads its series
   assert.equal(results.searchParams.get("runner"), "my-agent");
 
   const empty = await client.callTool({
-    name: "lbb_evals",
+    name: "lbb_evals_manage",
     arguments: { action: "run_answers", answers: [] },
   });
   assert.equal(empty.isError, true);
   assert.equal(calls.length, 2, "a refused call sends no request");
+  await client.close();
+});
+
+test("lbb_evals diagnose and diagnosis name the call", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ call: "c1", cause: "present_not_found" });
+  };
+  const client = await connect(fetch);
+
+  const diagnosed = await client.callTool({
+    name: "lbb_evals_manage",
+    arguments: { action: "diagnose", call_id: "c1" },
+  });
+  const read = await client.callTool({
+    name: "lbb_evals",
+    arguments: { action: "diagnosis", call_id: "c1", graph: "crm" },
+  });
+  const missing = await client.callTool({
+    name: "lbb_evals_manage",
+    arguments: { action: "diagnose" },
+  });
+
+  assert.notEqual(diagnosed.isError, true);
+  assert.notEqual(read.isError, true);
+  assert.equal(missing.isError, true);
+  assert.equal(calls.length, 2);
+  const [first, second] = calls.map((call) => new URL(call.input));
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(first.pathname, "/v1/models/checks/diagnose");
+  assert.deepEqual(Object.fromEntries(first.searchParams), {
+    graph: "g",
+    call: "c1",
+  });
+  assert.equal(calls[1].init.method, "GET");
+  assert.equal(second.pathname, "/v1/models/checks/diagnosis");
+  assert.equal(second.searchParams.get("graph"), "crm");
+  await client.close();
+});
+
+test("lbb_evals answer tests estimate, start, read and cancel a test of a next step", async () => {
+  const calls: Call[] = [];
+  const fetch: FetchLike = async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ id: "atest_0123456789abcdef01234567", status: "queued" });
+  };
+  const client = await connect(fetch);
+
+  for (const args of [
+    { action: "answer_tests_estimate", call_id: "c1", step: 1, guard: 0 },
+    {
+      action: "answer_tests_create",
+      call_id: "c1",
+      change: { kind: "ask_rerank" },
+      rewordings: false,
+    },
+    { action: "answer_test", id: "atest_0123456789abcdef01234567" },
+    { action: "answer_tests", call_id: "c1" },
+    { action: "answer_tests_cancel", id: "atest_0123456789abcdef01234567" },
+  ]) {
+    const write = ["answer_tests_create", "answer_tests_cancel"].includes(
+      args.action,
+    );
+    const result = await client.callTool({
+      name: write ? "lbb_evals_manage" : "lbb_evals",
+      arguments: args,
+    });
+    assert.notEqual(result.isError, true, JSON.stringify(args));
+  }
+  const missing = await client.callTool({
+    name: "lbb_evals_manage",
+    arguments: { action: "answer_tests_create", step: 0 },
+  });
+  assert.equal(missing.isError, true);
+
+  const urls = calls.map((call) => new URL(call.input));
+  assert.deepEqual(
+    calls.map((call, index) => `${call.init.method} ${urls[index].pathname}`),
+    [
+      "POST /v1/models/checks/answer-tests/estimate",
+      "POST /v1/models/checks/answer-tests",
+      "GET /v1/models/checks/answer-tests/get",
+      "GET /v1/models/checks/answer-tests",
+      "POST /v1/models/checks/answer-tests/cancel",
+    ],
+  );
+  assert.equal(urls[0].searchParams.get("call"), "c1");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    step: 1,
+    guard: 0,
+  });
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), {
+    change: { kind: "ask_rerank" },
+    rewordings: false,
+  });
+  assert.equal(urls[3].searchParams.get("call"), "c1");
   await client.close();
 });
 
@@ -879,11 +976,11 @@ test("lbb_evals review_check agrees with the judge or corrects it", async () => 
   const client = await connect(fetch);
 
   const agreed = await client.callTool({
-    name: "lbb_evals",
+    name: "lbb_evals_manage",
     arguments: { action: "review_check", call_id: "c1", agree: true },
   });
   const corrected = await client.callTool({
-    name: "lbb_evals",
+    name: "lbb_evals_manage",
     arguments: {
       action: "review_check",
       call_id: "c1",
@@ -929,7 +1026,7 @@ test("lbb_evals review_check refuses an incomplete review before any request", a
     { call_id: "c1", agree: false, verdict: "wrong", score: 2 },
   ]) {
     const result = await client.callTool({
-      name: "lbb_evals",
+      name: "lbb_evals_manage",
       arguments: { action: "review_check", ...args },
     });
     assert.equal(result.isError, true, JSON.stringify(args));
@@ -1021,11 +1118,16 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
       effort: "low",
       jobs: ["ask"],
       target: 20,
+      max_cost_usd: 10,
     },
   });
   await client.callTool({
     name: "lbb_model_choice_manage",
     arguments: { action: "stop", trial_id: "t1" },
+  });
+  await client.callTool({
+    name: "lbb_model_choice_manage",
+    arguments: { action: "limit", trial_id: "t1", max_cost_usd: 12.5 },
   });
   await client.callTool({
     name: "lbb_model_choice_manage",
@@ -1050,6 +1152,7 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
     [
       "POST /v1/models/trials?graph=g",
       "POST /v1/models/trials/stop?graph=g&id=t1",
+      "POST /v1/models/trials/limit?graph=g&id=t1",
       "POST /v1/models/switches?graph=crm",
       "POST /v1/models/switches/revert?graph=g&job=ask",
     ],
@@ -1062,9 +1165,52 @@ test("lbb_model_choice_manage starts, stops, switches and reverts", async () => 
     },
     jobs: ["ask"],
     target: 20,
+    max_cost_usd: 10,
   });
-  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), { trial: "t1" });
+  assert.deepEqual(JSON.parse(calls[2].init.body ?? "{}"), {
+    max_cost_usd: 12.5,
+  });
+  assert.deepEqual(JSON.parse(calls[3].init.body ?? "{}"), { trial: "t1" });
   await client.close();
+});
+
+test("a facts commit sends the key of each link end", async () => {
+  // A record written with a key and then linked must stay one record: the
+  // server reads (type, key) as its identity only when the key arrives.
+  const calls: Call[] = [];
+  const client = await connect(async (input, init) => {
+    calls.push({ input, init: init ?? {} });
+    return ok({ commit_seq: 1 });
+  });
+  try {
+    const committed = await client.callTool({
+      name: "lbb_commit",
+      arguments: {
+        triplets: [
+          {
+            source: { type: "Organization", name: "Acme", key: "org-1" },
+            relation: "HAS_CATEGORY",
+            target: { type: "Category", name: "Fintech", key: null },
+          },
+        ],
+        entity_properties: [
+          {
+            type: "Organization",
+            name: "Acme",
+            key: "org-1",
+            properties: { title: "Acme Ltd" },
+          },
+        ],
+      },
+    });
+    assert.notEqual(committed.isError, true, JSON.stringify(committed));
+    const body = JSON.parse(calls[0].init.body ?? "{}");
+    assert.equal(body.triplets[0].source.key, "org-1");
+    assert.equal(body.triplets[0].target.key, null);
+    assert.equal(body.entity_properties[0].key, "org-1");
+  } finally {
+    await client.close();
+  }
 });
 
 test("0.15.1-shaped inputs still pass: null optional fields and fields the server ignores", async () => {
